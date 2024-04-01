@@ -52,6 +52,10 @@ Required Packages:
 5.install qmi-tools /qmi-cli /uqmi-cli
 6.Install UPX package to compress the sing-box binary
 6.install sing-box
+7.Install kmod-tun
+8.install openvpn-mbedtls
+9.install kmod-wireguard
+
 
 Configure Modemmananger:
 --------------------------
