@@ -345,6 +345,18 @@ configure Modemband:
 
 3.Configure  sing-box :
 -------------------------
+
+Refer url:
+===========
+https://habr.com/ru/articles/756178/
+
+Imprtant Note:
+--------------------
+If sing-box ping works through tun interface but if the dns does not work through tun interface or you see
+reality verification failed . Then its the time settings in router. I had left the default Asia/Shangahi time setting
+and it keeps failing the reality verification failed. But after i set the correct timezone in router, Then the tunnel worked flawlessly
+
+
 In this guide we will install the package sing box on ImmortalWrt 23.05.1
 
 Recommended router at least 128 MB RAM ( 256 preferably ) and a memory of more than 16 MB, the way to install sing-box in RAM ( is suitable for devices with a small amount of ROM < 16 Mb ) will also be described.
