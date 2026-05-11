@@ -1,0 +1,655 @@
+create  the folders if not exists already for dashboard :
+/usr/lib/lua/luci/view/sa5g_monitor/
+
+
+Script 1:
+-------------------------------
+
+Filename 1: /root/sa5g_monitor.sh
+chmod +x /root/sa5g_monitor.sh
+
+
+#!/bin/sh
+MODEM_DEVICE="/dev/ttyUSB2"
+POLL_INTERVAL=10
+LOGFILE="/var/log/sa5g_monitor.log"
+PIDFILE="/var/run/sa5g_monitor.pid"
+STATUSFILE="/tmp/sa5g_monitor_status.json"
+
+# ---- Timings & thresholds --------------------------------------------------
+BOOT_GRACE=10                    # seconds after (re)start before reacting
+CONNECTIVITY_TIMEOUT=30          # seconds with PDP=1 but no IP → trigger recovery
+RECONNECT_COOLDOWN=180           # seconds between recovery attempts
+MAX_IFDOWN_RETRIES=2             # max Stage‑0 restarts before escalating
+PDP_ZERO_DEBOUNCE=2              # consecutive polls of PDP=0 before drop confirmed
+MODEM_MISSING_THRESHOLD=6        # 6 * 10s = 60 seconds before router reboot
+# ----------------------------------------------------------------------------
+
+log_msg() {
+    local now=$(date)
+    echo "$now: $1" | tee -a "$LOGFILE"
+    logger -t "sa5g_monitor" "$1"
+}
+
+write_status() {
+    SERVING_CELL_CLEAN=$(echo "$SERVING_CELL_INFO" | tr -d '\r\n' | sed 's/"/\\"/g')
+    cat > "$STATUSFILE" << EOF
+{
+  "registration_state": "${REG_STAT:-}",
+  "pdp_state": "${PDP_STATE:-}",
+  "scc_count": "${SCC_COUNT:-0}",
+  "serving_cell": "${SERVING_CELL_CLEAN:-}",
+  "connected_since": "${CONNECTED_SINCE:-}",
+  "script_running": "1",
+  "drops_total": "${DROP_COUNT:-0}",
+  "recovery_attempts": "${RECOVERY_ATTEMPTS:-0}",
+  "recovery_success": "${RECOVERY_SUCCESS:-0}",
+  "last_downtime": "${LAST_DOWNTIME:-}",
+  "last_drop_reason": "${LAST_DROP_REASON:-}"
+}
+EOF
+}
+
+has_ip() {
+    ip -4 addr show dev wwan0_1 2>/dev/null | grep -q "inet "
+}
+
+modem_ready() {
+    sms_tool -d "$MODEM_DEVICE" at "AT+C5GREG?" 2>/dev/null | grep -q "+C5GREG:"
+}
+
+qmi_ready() {
+    [ -e /dev/cdc-wdm0 ]
+}
+
+modem_present() {
+    [ -e "$MODEM_DEVICE" ] && [ -e /dev/cdc-wdm0 ]
+}
+
+reconnect_interface() {
+    log_msg "  -> Stage 0: Restarting wwan99 (notify_proto + ifup)."
+    RECOVERY_ATTEMPTS=$((RECOVERY_ATTEMPTS + 1))
+
+    log_msg "     Waiting for modem AT readiness..."
+    for i in $(seq 1 30); do
+        modem_ready && break
+        sleep 3
+    done
+    log_msg "     Waiting for /dev/cdc-wdm0..."
+    for i in $(seq 1 30); do
+        qmi_ready && break
+        sleep 3
+    done
+
+    log_msg "     Notifying netifd that wwan99 is available..."
+    ubus call network.interface.wwan99 notify_proto '{"action":5, "available":true}' 2>/dev/null
+    sleep 1
+    log_msg "     Bringing wwan99 up..."
+    ifup wwan99
+    sleep 5
+
+    log_msg "     Waiting for IP on wwan0_1..."
+    for i in $(seq 1 24); do
+        if has_ip; then
+            log_msg "     IP acquired."
+            break
+        fi
+        sleep 5
+    done
+
+    if ! has_ip; then
+        log_msg "     WARNING: No IP after interface restart."
+    fi
+}
+
+reset_modem_radio() {
+    log_msg "  -> Stage 1: Radio reset (AT+CFUN=0/1)."
+    RECOVERY_ATTEMPTS=$((RECOVERY_ATTEMPTS + 1))
+    sms_tool -d "$MODEM_DEVICE" at "AT+CFUN=0" 2>/dev/null
+    sleep 5
+    sms_tool -d "$MODEM_DEVICE" at "AT+CFUN=1" 2>/dev/null
+    sleep 15
+    reconnect_interface
+}
+
+reboot_modem() {
+    log_msg "  -> Stage 2: Full modem reboot (AT+CFUN=1,1)."
+    RECOVERY_ATTEMPTS=$((RECOVERY_ATTEMPTS + 1))
+    sms_tool -d "$MODEM_DEVICE" at "AT+CFUN=1,1" 2>/dev/null
+    sleep 5
+    log_msg "     Modem rebooting. Monitor exiting – procd will restart it."
+    exit 0
+}
+
+cleanup() {
+    log_msg "Monitor stopped."
+    echo '{"script_running":"0"}' > "$STATUSFILE"
+    rm -f "$PIDFILE"
+    exit 0
+}
+trap cleanup TERM INT
+
+echo $$ > "$PIDFILE"
+log_msg "Waiting for 5G SA modem..."
+for i in $(seq 1 36); do
+    if modem_ready; then
+        log_msg "Modem ready."
+        break
+    fi
+    sleep 5
+done
+
+if ! modem_ready; then
+    log_msg "Modem not responding. Exiting."
+    echo '{"script_running":"0"}' > "$STATUSFILE"
+    rm -f "$PIDFILE"
+    exit 1
+fi
+
+# Counters and state
+DROP_COUNT=0
+RECOVERY_ATTEMPTS=0
+RECOVERY_SUCCESS=0
+LAST_DROP_TIME=""
+LAST_DOWNTIME=""
+LAST_DROP_REASON=""
+CONNECTED_SINCE=""
+
+HAS_SEEN_ACTIVE_PDP=0
+CONSECUTIVE_DROPS=0
+LAST_RECONNECT=0
+STAGE=0
+DROP_ACTIVE=0
+PREV_SCC_COUNT=-1
+PDP_ZERO_COUNT=0
+MONITOR_START=$(date +%s)
+NO_IP_TIMER=0
+MODEM_MISSING_COUNT=0
+
+log_msg "Monitor started."
+
+while true; do
+    # ------------------------------------------------------------------
+    # 1. Hotplug flag check – instant reactivation
+    # ------------------------------------------------------------------
+    if [ -e /tmp/modem_reconnected ] && modem_present; then
+        log_msg "Hotplug event detected – immediate recovery."
+        rm -f /tmp/modem_reconnected
+        MODEM_MISSING_COUNT=0
+        DROP_ACTIVE=0
+        PDP_ZERO_COUNT=0
+        NO_IP_TIMER=0
+        reconnect_interface
+        sleep $POLL_INTERVAL
+        continue
+    fi
+
+    # ------------------------------------------------------------------
+    # 2. Modem presence watchdog
+    # ------------------------------------------------------------------
+    if ! modem_present; then
+        MODEM_MISSING_COUNT=$((MODEM_MISSING_COUNT + 1))
+        log_msg "Modem device(s) missing. Count: $MODEM_MISSING_COUNT/$MODEM_MISSING_THRESHOLD"
+
+        # Inform dashboard
+        SERVING_CELL_INFO="MODEM_MISSING"
+        REG_STAT=""; PDP_STATE=""; SCC_COUNT="0"
+        CONNECTED_SINCE=""
+        write_status
+
+        if [ $MODEM_MISSING_COUNT -ge $MODEM_MISSING_THRESHOLD ]; then
+            log_msg "Modem missing for too long. Rebooting router (Stage 3)."
+            reboot
+        fi
+        sleep $POLL_INTERVAL
+        continue
+    else
+        MODEM_MISSING_COUNT=0
+    fi
+
+    # ------------------------------------------------------------------
+    # 3. Normal AT data gathering (modem present)
+    # ------------------------------------------------------------------
+    C5GREG_OUT=$(sms_tool -d "$MODEM_DEVICE" at "AT+C5GREG?" 2>/dev/null | tr -d '\r')
+    REG_STAT=$(echo "$C5GREG_OUT" | grep "+C5GREG:" | awk -F'[, ]' '{print $3}')
+
+    QENG_OUT=$(sms_tool -d "$MODEM_DEVICE" at 'AT+QENG="servingcell"' 2>/dev/null | grep "+QENG:")
+    SERVING_CELL_INFO=$(echo "$QENG_OUT" | sed -n 's/^+QENG: //p')
+
+    QCAINFO_OUT=$(sms_tool -d "$MODEM_DEVICE" at "AT+QCAINFO" 2>/dev/null | grep "+QCAINFO:")
+    SCC_COUNT=$(echo "$QCAINFO_OUT" | grep -c "SCC")
+
+    CGACT_OUT=$(sms_tool -d "$MODEM_DEVICE" at "AT+CGACT?" 2>/dev/null | tr -d '\r')
+    PDP_STATE=$(echo "$CGACT_OUT" | grep "+CGACT:" | grep -o "1,[01]" | awk -F',' '{print $2}')
+    [ -z "$PDP_STATE" ] && PDP_STATE=1
+
+    NOW=$(date +%s)
+
+    # Track active PDP
+    if [ "$PDP_STATE" = "1" ]; then
+        HAS_SEEN_ACTIVE_PDP=1
+        if [ -z "$CONNECTED_SINCE" ]; then
+            CONNECTED_SINCE=$NOW
+        fi
+    else
+        CONNECTED_SINCE=""
+    fi
+
+    # Debounce PDP zero
+    if [ "$PDP_STATE" = "0" ]; then
+        PDP_ZERO_COUNT=$((PDP_ZERO_COUNT + 1))
+    else
+        PDP_ZERO_COUNT=0
+    fi
+
+    IN_GRACE=0
+    [ $((NOW - MONITOR_START)) -lt $BOOT_GRACE ] && IN_GRACE=1
+
+    # ------------------------------------------------------------------
+    # 4. Connectivity watchdog (PDP active but no IP)
+    # ------------------------------------------------------------------
+    if [ "$PDP_STATE" = "1" ] && ! has_ip; then
+        if [ "$NO_IP_TIMER" -eq 0 ]; then
+            NO_IP_TIMER=$NOW
+        elif [ $((NOW - NO_IP_TIMER)) -ge $CONNECTIVITY_TIMEOUT ] && [ "$IN_GRACE" -eq 0 ]; then
+            if [ "$DROP_ACTIVE" != "1" ]; then
+                DROP_ACTIVE=1
+                CONSECUTIVE_DROPS=$((CONSECUTIVE_DROPS + 1))
+                DROP_COUNT=$((DROP_COUNT + 1))
+                LAST_DROP_TIME=$NOW
+                LAST_DROP_REASON="No IP despite active PDP (possible NO_DEVICE)."
+                log_msg "DROP #$DROP_COUNT: $LAST_DROP_REASON"
+                NO_IP_TIMER=0
+            fi
+        fi
+    else
+        NO_IP_TIMER=0
+    fi
+
+    # ------------------------------------------------------------------
+    # 5. Classic drop detection (sustained PDP loss)
+    # ------------------------------------------------------------------
+    if [ $PDP_ZERO_COUNT -ge $PDP_ZERO_DEBOUNCE ] && [ $HAS_SEEN_ACTIVE_PDP -eq 1 ] && [ "$IN_GRACE" -eq 0 ]; then
+        if [ "$DROP_ACTIVE" != "1" ]; then
+            DROP_ACTIVE=1
+            CONSECUTIVE_DROPS=$((CONSECUTIVE_DROPS + 1))
+            DROP_COUNT=$((DROP_COUNT + 1))
+            LAST_DROP_TIME=$NOW
+            LAST_DROP_REASON="PDP context lost (sustained)."
+            log_msg "DROP #$DROP_COUNT: $LAST_DROP_REASON"
+        fi
+    fi
+
+    # ------------------------------------------------------------------
+    # 6. Recovery success
+    # ------------------------------------------------------------------
+    if [ "$DROP_ACTIVE" = "1" ] && [ "$PDP_STATE" = "1" ] && has_ip; then
+        RECOVERY_SUCCESS=$((RECOVERY_SUCCESS + 1))
+        [ -n "$LAST_DROP_TIME" ] && LAST_DOWNTIME=$((NOW - LAST_DROP_TIME))
+        DROP_ACTIVE=0; CONSECUTIVE_DROPS=0; STAGE=0; PDP_ZERO_COUNT=0; NO_IP_TIMER=0
+        log_msg "Recovery successful. Downtime: ${LAST_DOWNTIME}s"
+    fi
+
+    # ------------------------------------------------------------------
+    # 7. Staged recovery actions
+    # ------------------------------------------------------------------
+    if [ "$DROP_ACTIVE" = "1" ] && [ "$IN_GRACE" -eq 0 ]; then
+        if [ $((NOW - LAST_RECONNECT)) -lt $RECONNECT_COOLDOWN ]; then
+            if [ $CONSECUTIVE_DROPS -gt $MAX_IFDOWN_RETRIES ]; then
+                if [ $STAGE -eq 0 ]; then
+                    STAGE=1; CONSECUTIVE_DROPS=0
+                    reset_modem_radio
+                elif [ $STAGE -eq 1 ]; then
+                    STAGE=2; CONSECUTIVE_DROPS=0
+                    reboot_modem
+                else
+                    log_msg "Already at Stage 2, waiting."
+                    CONSECUTIVE_DROPS=0
+                fi
+                LAST_RECONNECT=$NOW
+            else
+                reconnect_interface
+                LAST_RECONNECT=$NOW
+            fi
+        else
+            CONSECUTIVE_DROPS=1; STAGE=0
+            reconnect_interface
+            LAST_RECONNECT=$NOW
+        fi
+    fi
+
+    write_status
+    PREV_SCC_COUNT=$SCC_COUNT
+    sleep $POLL_INTERVAL
+done
+
+
+
+
+Script 2:
+--------------------------
+Filename 2: /etc/init.d/sa5g_monitor
+
+chmod +x /etc/init.d/sa5g_monitor
+
+
+#!/bin/sh /etc/rc.common
+
+START=99
+USE_PROCD=1
+PROG=/root/sa5g_monitor.sh
+PIDFILE=/var/run/sa5g_monitor.pid
+
+start_service() {
+    logger -t sa5g_monitor_init "Starting SA 5G monitor service."
+    procd_open_instance
+    procd_set_param command "$PROG"
+    procd_set_param pidfile "$PIDFILE"
+    procd_set_param respawn 3600 5 5   # restart if dies after 1 hour
+    procd_close_instance
+}
+
+stop_service() {
+    logger -t sa5g_monitor_init "Stopping SA 5G monitor service."
+    if [ -f "$PIDFILE" ]; then
+        kill $(cat "$PIDFILE") 2>/dev/null
+        rm -f "$PIDFILE"
+    fi
+}
+
+service_triggers() {
+    procd_add_reload_trigger "sa5g_monitor"
+}
+
+
+
+
+Script 3:
+-----------------
+
+Filename: /etc/hotplug.d/usb/99-modem-flag
+chmod +x /etc/hotplug.d/usb/99-modem-flag
+
+#!/bin/sh
+# When the Quectel modem USB device appears, signal the monitor to check readiness.
+# Only trigger for our specific modem (idVendor=2c7c, idProduct=801)
+PRODUCT_ID="2c7c/801"   # from your log: idVendor=0x2c7c, idProduct=0x801
+
+case "$ACTION" in
+    add)
+        # Wait a brief moment for ttyUSB* and cdc-wdm0 to be registered
+        sleep 2
+        # Touch a flag file – the monitor will react
+        touch /tmp/modem_reconnected
+        logger -t modem_hotplug "Modem USB device added – signalled monitor."
+        ;;
+    remove)
+        # Modem disappeared – delete flag (monitor will detect missing devices via its own check)
+        rm -f /tmp/modem_reconnected
+        logger -t modem_hotplug "Modem USB device removed."
+        ;;
+esac
+
+
+
+Script 4:
+--------------------
+
+Filename: /usr/lib/lua/luci/controller/sa5g_monitor.lua
+
+module("luci.controller.sa5g_monitor", package.seeall)
+
+function index()
+    entry({"admin", "services", "sa5g_monitor"}, firstchild(), _("SA 5G Monitor"), 60).dependent = false
+    entry({"admin", "services", "sa5g_monitor", "overview"}, template("sa5g_monitor/overview"), _("Overview"), 1).leaf = true
+    entry({"admin", "services", "sa5g_monitor", "action"}, call("action_handler")).leaf = true
+    entry({"admin", "services", "sa5g_monitor", "uci"}, call("action_uci")).leaf = true
+    entry({"admin", "services", "sa5g_monitor", "log"}, call("action_log")).leaf = true
+end
+
+function action_handler()
+    local cmd = luci.http.formvalue("cmd")
+
+    if cmd == "start" or cmd == "stop" or cmd == "restart" then
+        os.execute("/etc/init.d/sa5g_monitor " .. cmd)
+        luci.http.prepare_content("application/json")
+        luci.http.write_json({ result = "ok" })
+        return
+    end
+
+    local script = nil
+
+    if cmd == "force_reconnect" then
+        script = "( " ..
+            "exec >>/var/log/sa5g_force_reboot.log 2>&1; " ..
+            "echo \"$(date): Force reconnect started\"; " ..
+            "/etc/init.d/sa5g_monitor stop; " ..
+            "ifdown wwan99; sleep 5; " ..
+            "for i in $(seq 1 20); do sms_tool -d /dev/ttyUSB2 at 'AT+C5GREG?' 2>/dev/null | grep -q '+C5GREG:' && break; sleep 3; done; " ..
+            "for i in $(seq 1 20); do [ -e /dev/cdc-wdm0 ] && break; sleep 3; done; " ..
+            "ifup wwan99; sleep 15; " ..
+            "/etc/init.d/sa5g_monitor start; " ..
+            "echo \"$(date): Force reconnect complete\" " ..
+        ") &"
+    elseif cmd == "force_radio" then
+        script = "( " ..
+            "exec >>/var/log/sa5g_force_reboot.log 2>&1; " ..
+            "echo \"$(date): Force radio reset started\"; " ..
+            "/etc/init.d/sa5g_monitor stop; " ..
+            "sms_tool -d /dev/ttyUSB2 at 'AT+CFUN=0' 2>/dev/null; sleep 5; " ..
+            "sms_tool -d /dev/ttyUSB2 at 'AT+CFUN=1' 2>/dev/null; sleep 15; " ..
+            "for i in $(seq 1 20); do sms_tool -d /dev/ttyUSB2 at 'AT+C5GREG?' 2>/dev/null | grep -q '+C5GREG:' && break; sleep 3; done; " ..
+            "for i in $(seq 1 20); do [ -e /dev/cdc-wdm0 ] && break; sleep 3; done; " ..
+            "ifup wwan99; sleep 15; " ..
+            "/etc/init.d/sa5g_monitor start; " ..
+            "echo \"$(date): Force radio reset complete\" " ..
+        ") &"
+    elseif cmd == "force_reboot" then
+        script = "( " ..
+            "exec >>/var/log/sa5g_force_reboot.log 2>&1; " ..
+            "echo \"$(date): Force reboot started\"; " ..
+            "/etc/init.d/sa5g_monitor stop; " ..
+            "sms_tool -d /dev/ttyUSB2 at 'AT+CFUN=1,1' 2>/dev/null; sleep 5; " ..
+            "sleep 40; " ..
+            "echo \"$(date): Waiting for modem...\"; " ..
+            "for i in $(seq 1 30); do sms_tool -d /dev/ttyUSB2 at 'AT+C5GREG?' 2>/dev/null | grep -q '+C5GREG:' && break; sleep 3; done; " ..
+            "for i in $(seq 1 30); do [ -e /dev/cdc-wdm0 ] && break; sleep 3; done; " ..
+            "echo \"$(date): Notifying netifd & bringing up wwan99...\"; " ..
+            "ubus call network.interface.wwan99 notify_proto '{\"action\":5, \"available\":true}' 2>/dev/null; " ..
+            "sleep 1; " ..
+            "ifup wwan99; " ..
+            "sleep 15; " ..
+            "/etc/init.d/sa5g_monitor start; " ..
+            "echo \"$(date): Force reboot complete\" " ..
+        ") &"
+    else
+        luci.http.status(400, "Bad Request")
+        return
+    end
+
+    os.execute(script)
+    luci.http.prepare_content("application/json")
+    luci.http.write_json({ result = "ok" })
+end
+
+function action_uci()
+    local file = io.open("/tmp/sa5g_monitor_status.json", "r")
+    if not file then
+        luci.http.status(500, "No status file")
+        luci.http.write('{"error":"no status file"}')
+        return
+    end
+    local content = file:read("*all")
+    file:close()
+    luci.http.prepare_content("application/json")
+    luci.http.write(content)
+end
+
+function action_log()
+    local file = io.open("/var/log/sa5g_monitor.log", "r")
+    local content = ""
+    if file then
+        local lines = {}
+        for line in file:lines() do
+            table.insert(lines, line)
+            if #lines > 50 then table.remove(lines, 1) end
+        end
+        file:close()
+        content = table.concat(lines, "\n")
+    end
+    luci.http.prepare_content("text/plain")
+    luci.http.write(content)
+end
+
+
+Script 5:
+------------------
+
+Filename: /usr/lib/lua/luci/view/sa5g_monitor/overview.htm
+
+<%+header%>
+<h2 name="title"><%: SA 5G Monitor Dashboard %></h2>
+
+<div id="status-panel">
+    <h3><%: Current Status %></h3>
+    <div id="modem_missing_alert" style="display:none; background:#fdd; border:1px solid red; padding:10px; margin-bottom:10px;">
+        <strong style="color:red;">⚠ Modem not detected!</strong>
+        <p><%: The modem devices (/dev/ttyUSB2 or /dev/cdc-wdm0) are missing. The monitor will eventually reboot the router if this persists.%></p>
+    </div>
+    <table class="table" id="normal_status_table">
+        <tr><td><%: PDP session (data) %></td><td id="pdp_status">--</td></tr>
+        <tr><td><%: Registration state %></td><td id="reg_state">--</td></tr>
+        <tr><td><%: SCC count %></td><td id="scc_count">--</td></tr>
+        <tr><td><%: Serving cell %></td><td id="serving_cell">--</td></tr>
+        <tr><td><%: Uptime %></td><td id="uptime">--</td></tr>
+        <tr><td><%: Monitor running %></td><td id="script_running">--</td></tr>
+    </table>
+</div>
+
+<div id="stats-panel">
+    <h3><%: Recovery Statistics %></h3>
+    <table class="table">
+        <tr><td><%: Total drops %></td><td id="drops_total">0</td></tr>
+        <tr><td><%: Recovery attempts %></td><td id="recov_attempts">0</td></tr>
+        <tr><td><%: Successful recoveries %></td><td id="recov_success">0</td></tr>
+        <tr><td><%: Success rate %></td><td id="success_rate">0%</td></tr>
+        <tr><td><%: Last downtime (s) %></td><td id="last_downtime">--</td></tr>
+        <tr><td><%: Last drop reason %></td><td id="last_reason">--</td></tr>
+    </table>
+</div>
+
+<div id="actions-panel">
+    <h3><%: Manual Controls %></h3>
+    <button class="cbi-button cbi-button-reset" onclick="doAction('start')"><%: Start Monitor %></button>
+    <button class="cbi-button cbi-button-reset" onclick="doAction('stop')"><%: Stop Monitor %></button>
+    <button class="cbi-button cbi-button-apply" onclick="doAction('force_reconnect')"><%: Force Reconnect %></button>
+    <button class="cbi-button cbi-button-apply" onclick="doAction('force_radio')"><%: Force Radio Reset %></button>
+    <button class="cbi-button cbi-button-apply" onclick="doAction('force_reboot')"><%: Force Modem Reboot %></button>
+    <div id="action_feedback"></div>
+</div>
+
+<div id="log-panel">
+    <h3><%: Recent Events %></h3>
+    <pre id="log_area" style="max-height:200px; overflow:auto; background:#111; color:#0f0; padding:10px;"></pre>
+</div>
+
+<script type="text/javascript">
+    function doAction(cmd) {
+        var xhr = new XMLHttpRequest();
+        xhr.open("POST", "<%=url('admin/services/sa5g_monitor/action')%>", true);
+        xhr.setRequestHeader("Content-Type", "application/x-www-form-urlencoded");
+        xhr.onload = function() {
+            if (xhr.status == 200) {
+                document.getElementById("action_feedback").innerHTML = '<%: Command sent. %>';
+            } else {
+                document.getElementById("action_feedback").innerHTML = '<%: Error. %>';
+            }
+            setTimeout(function(){ document.getElementById("action_feedback").innerHTML = ''; }, 3000);
+        };
+        xhr.send("cmd=" + cmd);
+    }
+
+    function updateStatus() {
+        var xhr = new XMLHttpRequest();
+        xhr.open("GET", "<%=url('admin/services/sa5g_monitor/uci')%>", true);
+        xhr.onload = function() {
+            if (xhr.status == 200) {
+                var data = JSON.parse(xhr.responseText);
+
+                // Check for modem missing state
+                if (data.serving_cell === "MODEM_MISSING") {
+                    document.getElementById("modem_missing_alert").style.display = "block";
+                    document.getElementById("normal_status_table").style.display = "none";
+                    document.getElementById("script_running").textContent = (data.script_running == "1") ? '<%: Yes %>' : '<%: No %>';
+                    // Recovery stats still show from script (they'll be zeroed)
+                } else {
+                    document.getElementById("modem_missing_alert").style.display = "none";
+                    document.getElementById("normal_status_table").style.display = "";
+
+                    var pdp = data.pdp_state;
+                    if (pdp == "1") {
+                        document.getElementById("pdp_status").textContent = '<%: Active %>';
+                        document.getElementById("pdp_status").style.color = 'green';
+                    } else {
+                        document.getElementById("pdp_status").textContent = '<%: Inactive %>';
+                        document.getElementById("pdp_status").style.color = 'red';
+                    }
+
+                    var reg = data.registration_state;
+                    if (reg === "1") reg = '<%: Home %>';
+                    else if (reg === "5") reg = '<%: Roaming %>';
+                    else if (reg === "2") reg = '<%: Searching %>';
+                    else reg = reg || '--';
+                    document.getElementById("reg_state").textContent = reg;
+
+                    document.getElementById("scc_count").textContent = data.scc_count || '0';
+                    document.getElementById("serving_cell").textContent = data.serving_cell || '--';
+                    document.getElementById("script_running").textContent = (data.script_running == "1") ? '<%: Yes %>' : '<%: No %>';
+
+                    var since = parseInt(data.connected_since);
+                    if (since > 0) {
+                        var uptime = Math.floor(Date.now()/1000) - since;
+                        var h = Math.floor(uptime/3600);
+                        var m = Math.floor((uptime%3600)/60);
+                        var s = uptime % 60;
+                        document.getElementById("uptime").textContent = h + "h " + m + "m " + s + "s";
+                        document.getElementById("uptime").style.color = 'green';
+                    } else {
+                        document.getElementById("uptime").textContent = '<%: Disconnected %>';
+                        document.getElementById("uptime").style.color = 'red';
+                    }
+                }
+
+                // Common recovery stats
+                document.getElementById("drops_total").textContent = data.drops_total || 0;
+                document.getElementById("recov_attempts").textContent = data.recovery_attempts || 0;
+                document.getElementById("recov_success").textContent = data.recovery_success || 0;
+                var rate = 0;
+                if (data.recovery_attempts > 0) rate = Math.round(data.recovery_success / data.recovery_attempts * 100);
+                document.getElementById("success_rate").textContent = rate + '%';
+                document.getElementById("last_downtime").textContent = (data.last_downtime ? data.last_downtime + ' s' : '--');
+                document.getElementById("last_reason").textContent = data.last_drop_reason || '--';
+            }
+        };
+        xhr.send();
+    }
+
+    function updateLog() {
+        var xhr = new XMLHttpRequest();
+        xhr.open("GET", "<%=url('admin/services/sa5g_monitor/log')%>", true);
+        xhr.onload = function() {
+            if (xhr.status == 200) {
+                document.getElementById("log_area").textContent = xhr.responseText;
+            }
+        };
+        xhr.send();
+    }
+
+    setInterval(updateStatus, 10000);
+    updateStatus();
+    setInterval(updateLog, 10000);
+    updateLog();
+</script>
+<%+footer%>
+
+
