@@ -46,18 +46,6 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout upstream QModem source
-      uses: actions/checkout@v4
-      with:
-        repository: FUjr/QModem
-        ref: main
-
-    - name: Checkout wwan-packages (quectel-cm + MHI driver)
-      uses: actions/checkout@v4
-      with:
-        repository: immortalwrt/wwan-packages
-        path: wwan-packages
-
     - name: Prepare build environment
       run: |
         sudo apt-get update
@@ -75,22 +63,23 @@ jobs:
     - name: Add feeds and update
       run: |
         cd immortalwrt-sdk-24.10.6-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64
-        echo "src-link qmodem ${{ github.workspace }}" >> feeds.conf.default
-        echo "src-link wwan ${{ github.workspace }}/wwan-packages" >> feeds.conf.default
+        # Use src-git to avoid filesystem loops
+        echo "src-git qmodem https://github.com/FUjr/QModem.git;main" >> feeds.conf.default
         ./scripts/feeds update -a
-        ./scripts/feeds install -a -p qmodem
-        ./scripts/feeds install -a -p wwan
+        ./scripts/feeds install -a
 
-    - name: Configure build options (disable unused dependencies)
+    - name: Configure build options
       run: |
         cd immortalwrt-sdk-24.10.6-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64
-        # Disable the QWRT quectel-CM-5G package (we use normal quectel-cm)
-        echo "# CONFIG_PACKAGE_quectel-CM-5G is not set" >> .config
-        # Enable the normal quectel-cm
-        echo "CONFIG_PACKAGE_quectel-cm=y" >> .config
-        # Optionally disable the MHI module if not needed (your modem is USB/QMI)
-        echo "# CONFIG_PACKAGE_kmod-mhi-wwan is not set" >> .config
-        # Re-apply feeds to pick up the config changes
+        # Select Tom customized Quectel CM (avoids dependency on quectel-CM-5G)
+        echo "CONFIG_PACKAGE_luci-app-qmodem_USE_TOM_CUSTOMIZED_QUECTEL_CM=y" >> .config
+        # Disable QWRT and Normal CM to avoid warnings
+        echo "# CONFIG_PACKAGE_luci-app-qmodem_USING_QWRT_QUECTEL_CM_5G is not set" >> .config
+        echo "# CONFIG_PACKAGE_luci-app-qmodem_USING_NORMAL_QUECTEL_CM is not set" >> .config
+        # Disable MHI (PCIe) drivers (not needed for USB modem)
+        echo "# CONFIG_PACKAGE_luci-app-qmodem_GENERIC_MHI_PCIe_DRIVER is not set" >> .config
+        echo "# CONFIG_PACKAGE_luci-app-qmodem_VENDOR_MHI_PCIe_DRIVER is not set" >> .config
+        # Re-apply config changes
         ./scripts/feeds update -a
         ./scripts/feeds install -a
 
