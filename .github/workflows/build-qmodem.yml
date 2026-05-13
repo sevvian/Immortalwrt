@@ -60,26 +60,13 @@ jobs:
         tar --zstd -xf immortalwrt-sdk-24.10.6-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64.tar.zst
         cd immortalwrt-sdk-24.10.6-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64
 
-    - name: Add feeds and update
+    - name: Add feeds and update (fix detached HEAD)
       run: |
         cd immortalwrt-sdk-24.10.6-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64
-        # Use src-git to avoid filesystem loops
+        # Remove broken base feed – forces re-clone to avoid 'git pull' failure
+        rm -rf feeds/base
+        # Add QModem feed with its own CM variant
         echo "src-git qmodem https://github.com/FUjr/QModem.git;main" >> feeds.conf.default
-        ./scripts/feeds update -a
-        ./scripts/feeds install -a
-
-    - name: Configure build options
-      run: |
-        cd immortalwrt-sdk-24.10.6-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64
-        # Select Tom customized Quectel CM (avoids dependency on quectel-CM-5G)
-        echo "CONFIG_PACKAGE_luci-app-qmodem_USE_TOM_CUSTOMIZED_QUECTEL_CM=y" >> .config
-        # Disable QWRT and Normal CM to avoid warnings
-        echo "# CONFIG_PACKAGE_luci-app-qmodem_USING_QWRT_QUECTEL_CM_5G is not set" >> .config
-        echo "# CONFIG_PACKAGE_luci-app-qmodem_USING_NORMAL_QUECTEL_CM is not set" >> .config
-        # Disable MHI (PCIe) drivers (not needed for USB modem)
-        echo "# CONFIG_PACKAGE_luci-app-qmodem_GENERIC_MHI_PCIe_DRIVER is not set" >> .config
-        echo "# CONFIG_PACKAGE_luci-app-qmodem_VENDOR_MHI_PCIe_DRIVER is not set" >> .config
-        # Re-apply config changes
         ./scripts/feeds update -a
         ./scripts/feeds install -a
 
