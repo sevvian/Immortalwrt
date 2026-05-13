@@ -93,10 +93,22 @@ jobs:
         make package/luci-app-qmodem/compile V=s
         make package/luci-app-qmodem-sms/compile V=s
 
-    - name: Collect IPK files
+    - name: Collect IPK files (QModem only)
       run: |
         mkdir -p ipks
-        find immortalwrt-sdk-24.10.6-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64/bin -name "*.ipk" -exec cp {} ipks \;
+        SDK_DIR=$(ls -d immortalwrt-sdk-* | head -1)
+        # The architecture string from your build logs:
+        ARCH="arm_cortex-a9_vfpv3-d16"
+        PKG_DIR="$SDK_DIR/bin/packages/$ARCH/qmodem"
+        if [ -d "$PKG_DIR" ]; then
+          cp "$PKG_DIR"/*.ipk ipks/ 2>/dev/null
+          echo "Copied QModem packages from $PKG_DIR"
+        else
+          echo "QModem package directory not found."
+          ls -R "$SDK_DIR/bin/packages/$ARCH" || true
+        fi
+        # Optional: include luci-app-qmodem-sms if it ends up elsewhere
+        cp "$SDK_DIR/bin/packages/$ARCH/qmodem"/*sms*.ipk ipks/ 2>/dev/null || true
 
     - name: Create Release
       uses: softprops/action-gh-release@v2
