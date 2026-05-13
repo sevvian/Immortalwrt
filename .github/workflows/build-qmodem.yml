@@ -68,7 +68,22 @@ jobs:
         # Add QModem feed with its own CM variant
         echo "src-git qmodem https://github.com/FUjr/QModem.git;main" >> feeds.conf.default
         ./scripts/feeds update -a
-        ./scripts/feeds install -a
+        # Install only the packages we need (reduces chance of conflicts)
+        ./scripts/feeds install luci-app-qmodem
+        ./scripts/feeds install luci-app-qmodem-sms
+
+    - name: Configure build options (non‑interactive)
+      run: |
+        cd immortalwrt-sdk-24.10.6-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64
+        # Select Tom customized Quectel CM (avoids dependency on missing quectel-CM-5G)
+        echo "CONFIG_PACKAGE_quectel_CM_5G_M=y" >> .config
+        echo "# CONFIG_PACKAGE_quectel-CM-5G is not set" >> .config
+        # Disable MHI (PCIe) drivers – not needed for USB modems
+        echo "# CONFIG_PACKAGE_quectel_MHI is not set" >> .config
+        echo "# CONFIG_PACKAGE_fibocom_QMI_WWAN is not set" >> .config
+        echo "# CONFIG_PACKAGE_simcom_QMI_WWAN is not set" >> .config
+        # Generate a full .config without requiring a terminal
+        make defconfig
 
     - name: Build QModem packages
       run: |
