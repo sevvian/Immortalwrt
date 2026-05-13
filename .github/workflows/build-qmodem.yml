@@ -19,12 +19,9 @@ jobs:
         UPSTREAM_REPO="FUjr/QModem"
         API_URL="https://api.github.com/repos/$UPSTREAM_REPO/commits/main"
         LATEST_SHA=$(curl -s $API_URL | jq -r '.sha')
-
         LAST_BUILT_SHA=$(cat .last_built_sha 2>/dev/null || echo "")
-
         echo "Latest upstream SHA: $LATEST_SHA"
         echo "Last built SHA: $LAST_BUILT_SHA"
-
         if [ "$LATEST_SHA" != "$LAST_BUILT_SHA" ]; then
           echo "New commits detected. Triggering build."
           echo "build_needed=true" >> $GITHUB_OUTPUT
@@ -55,6 +52,12 @@ jobs:
         repository: FUjr/QModem
         ref: main
 
+    - name: Checkout wwan-packages (quectel-cm + MHI driver)
+      uses: actions/checkout@v4
+      with:
+        repository: immortalwrt/wwan-packages
+        path: wwan-packages
+
     - name: Prepare build environment
       run: |
         sudo apt-get update
@@ -69,20 +72,33 @@ jobs:
         tar --zstd -xf immortalwrt-sdk-24.10.6-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64.tar.zst
         cd immortalwrt-sdk-24.10.6-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64
 
-    - name: Add QModem as local feed and install dependencies
+    - name: Add feeds and update
       run: |
         cd immortalwrt-sdk-24.10.6-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64
         echo "src-link qmodem ${{ github.workspace }}" >> feeds.conf.default
+        echo "src-link wwan ${{ github.workspace }}/wwan-packages" >> feeds.conf.default
         ./scripts/feeds update -a
         ./scripts/feeds install -a -p qmodem
+        ./scripts/feeds install -a -p wwan
+
+    - name: Configure build options (disable unused dependencies)
+      run: |
+        cd immortalwrt-sdk-24.10.6-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64
+        # Disable the QWRT quectel-CM-5G package (we use normal quectel-cm)
+        echo "# CONFIG_PACKAGE_quectel-CM-5G is not set" >> .config
+        # Enable the normal quectel-cm
+        echo "CONFIG_PACKAGE_quectel-cm=y" >> .config
+        # Optionally disable the MHI module if not needed (your modem is USB/QMI)
+        echo "# CONFIG_PACKAGE_kmod-mhi-wwan is not set" >> .config
+        # Re-apply feeds to pick up the config changes
+        ./scripts/feeds update -a
+        ./scripts/feeds install -a
 
     - name: Build QModem packages
       run: |
         cd immortalwrt-sdk-24.10.6-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64
         make package/luci-app-qmodem/compile V=s
         make package/luci-app-qmodem-sms/compile V=s
-        # Uncomment below for additional packages
-        # make package/luci-app-qmodem-mwan/compile V=s
 
     - name: Collect IPK files
       run: |
