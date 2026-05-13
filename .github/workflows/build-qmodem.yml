@@ -60,7 +60,7 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y build-essential clang flex bison g++ gawk \
         gcc-multilib g++-multilib gettext git libncurses-dev libssl-dev \
-        python3-distutils rsync unzip zlib1g-dev file wget zstd
+        python3-dev python3-setuptools rsync unzip zlib1g-dev file wget zstd
 
     - name: Download ImmortalWrt SDK 24.10.6 (mvebu/cortexa9)
       run: |
@@ -81,7 +81,8 @@ jobs:
         cd immortalwrt-sdk-24.10.6-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64
         make package/luci-app-qmodem/compile V=s
         make package/luci-app-qmodem-sms/compile V=s
-        # Optionally add other packages
+        # Uncomment below for additional packages
+        # make package/luci-app-qmodem-mwan/compile V=s
 
     - name: Collect IPK files
       run: |
