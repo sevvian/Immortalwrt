@@ -45,7 +45,7 @@ jobs:
     if: needs.check-and-build.outputs.build_needed == 'true'
     runs-on: ubuntu-latest
     permissions:
-      contents: write      # Required to create releases
+      contents: write
 
     steps:
     - name: Prepare build environment
@@ -55,12 +55,22 @@ jobs:
         gcc-multilib g++-multilib gettext git libncurses-dev libssl-dev \
         python3-dev python3-setuptools rsync unzip zlib1g-dev file wget zstd
 
-    - name: Download ImmortalWrt SDK 24.10.6 (bcm27xx/bcm2711)
+    # ------------------------------------------------------------------
+    # SDK Cache – speeds up subsequent runs dramatically
+    # ------------------------------------------------------------------
+    - name: Restore SDK cache
+      id: cache-sdk
+      uses: actions/cache@v4
+      with:
+        path: immortalwrt-sdk-*
+        key: sdk-rpi4-24.10.6-v1   # bump v1 → v2 if SDK version changes
+
+    - name: Download & extract SDK (only if cache miss)
+      if: steps.cache-sdk.outputs.cache-hit != 'true'
       run: |
         SDK_URL="https://downloads.immortalwrt.org/releases/24.10.6/targets/bcm27xx/bcm2711/immortalwrt-sdk-24.10.6-bcm27xx-bcm2711_gcc-13.3.0_musl.Linux-x86_64.tar.zst"
         wget -q "$SDK_URL"
         tar --zstd -xf immortalwrt-sdk-24.10.6-bcm27xx-bcm2711_gcc-13.3.0_musl.Linux-x86_64.tar.zst
-        cd immortalwrt-sdk-24.10.6-bcm27xx-bcm2711_gcc-13.3.0_musl.Linux-x86_64
 
     - name: Add feeds and update (fix detached HEAD)
       run: |
@@ -100,8 +110,6 @@ jobs:
           echo "QModem package directory not found. Listing available archs:"
           ls -d "$SDK_DIR/bin/packages/"*/
         fi
-        # Optional: include luci-app-qmodem-sms if it ends up elsewhere
-        cp "$SDK_DIR/bin/packages/$ARCH/qmodem"/*sms*.ipk ipks/ 2>/dev/null || true
 
     - name: Create Release
       uses: softprops/action-gh-release@v2
