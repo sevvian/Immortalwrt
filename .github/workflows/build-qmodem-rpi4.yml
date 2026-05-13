@@ -44,6 +44,8 @@ jobs:
     needs: check-and-build
     if: needs.check-and-build.outputs.build_needed == 'true'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write      # Required to create releases
 
     steps:
     - name: Prepare build environment
