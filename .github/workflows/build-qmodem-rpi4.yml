@@ -100,6 +100,8 @@ jobs:
           echo "QModem package directory not found. Listing available archs:"
           ls -d "$SDK_DIR/bin/packages/"*/
         fi
+        # Optional: include luci-app-qmodem-sms if it ends up elsewhere
+        cp "$SDK_DIR/bin/packages/$ARCH/qmodem"/*sms*.ipk ipks/ 2>/dev/null || true
 
     - name: Create Release
       uses: softprops/action-gh-release@v2
