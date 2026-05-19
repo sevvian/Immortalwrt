@@ -81,6 +81,8 @@ jobs:
         ./scripts/feeds update -a
         ./scripts/feeds install luci-app-qmodem
         ./scripts/feeds install luci-app-qmodem-sms
+        ./scripts/feeds install qmodem_monitor
+        ./scripts/feeds install luci-app-qmodem-monitor
 
     - name: Configure build options (non‑interactive)
       run: |
