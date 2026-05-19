@@ -74,6 +74,7 @@ jobs:
       run: |
         cd immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64
         rm -rf feeds/base
+        sed -i '/^src-git qmodem /d' feeds.conf.default
         echo "src-git qmodem https://github.com/FUjr/QModem.git;main" >> feeds.conf.default
         ./scripts/feeds update -a
         ./scripts/feeds install luci-app-qmodem
