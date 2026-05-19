@@ -76,6 +76,7 @@ jobs:
       run: |
         cd immortalwrt-sdk-24.10.6-bcm27xx-bcm2711_gcc-13.3.0_musl.Linux-x86_64
         rm -rf feeds/base
+        sed -i '/^src-git qmodem /d' feeds.conf.default
         echo "src-git qmodem https://github.com/FUjr/QModem.git;main" >> feeds.conf.default
         ./scripts/feeds update -a
         ./scripts/feeds install luci-app-qmodem
