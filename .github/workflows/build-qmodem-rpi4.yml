@@ -99,6 +99,8 @@ jobs:
         cd immortalwrt-sdk-24.10.6-bcm27xx-bcm2711_gcc-13.3.0_musl.Linux-x86_64
         make package/luci-app-qmodem/compile V=s
         make package/luci-app-qmodem-sms/compile V=s
+        make package/qmodem_monitor/compile V=s
+        make package/luci-app-qmodem-monitor/compile V=s
 
     - name: Collect IPK files (QModem only)
       run: |
