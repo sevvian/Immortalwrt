@@ -2,8 +2,7 @@ name: Build QModem for OpenWrt 24.10.4
 
 on:
   workflow_dispatch:
-  push:
-    branches: [ main ]
+
 
 jobs:
   build:
