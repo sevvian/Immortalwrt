@@ -85,10 +85,11 @@ jobs:
       run: |
         cd immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64
         rm -rf feeds/base
+        # Remove any existing qmodem feed entry (src-git or src-link)
+        sed -i '/^src-[a-z]* qmodem /d' feeds.conf.default
         # Link the local QModem checkout
         echo "src-link qmodem ${{ github.workspace }}/qmodem-source" >> feeds.conf.default
         ./scripts/feeds update -a
-        # Install ALL QModem packages to ensure dependencies are resolved
         ./scripts/feeds install -a -p qmodem
 
     # 6. Configure build options
