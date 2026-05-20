@@ -110,11 +110,11 @@ jobs:
     - name: Build QModem packages
       run: |
         cd immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64
-        make package/qmodem/compile V=s
-        make package/luci-app-qmodem-next/compile V=s
-        make package/luci-app-qmodem-monitor/compile V=s
-        make package/qmodem_monitor/compile V=s
-        make package/sms-forwarder-next/compile V=s
+        make package/feeds/qmodem/application/qmodem/compile V=s
+        make package/feeds/qmodem/application/qmodem_monitor/compile V=s
+        make package/feeds/qmodem/application/sms_forwarder_next/compile V=s
+        make package/feeds/qmodem/luci/luci-app-qmodem-next/compile V=s
+        make package/feeds/qmodem/luci/luci-app-qmodem-monitor/compile V=s
 
     - name: Collect IPK files (QModem Next + curl)
       run: |
