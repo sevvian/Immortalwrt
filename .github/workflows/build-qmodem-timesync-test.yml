@@ -1,8 +1,6 @@
-name: Build QModem + quectel-timesync for ImmortalWrt 24.10.4 (mvebu/cortexa9)
+name: Build QModem + extras for ImmortalWrt 24.10.4 (mvebu/cortexa9)
 
 on:
-#  schedule:
-#    - cron: '0 6 * * *'
   workflow_dispatch:
 
 jobs:
@@ -64,7 +62,18 @@ jobs:
         path: quectel-timesync-source
         ref: master
 
-    # 3. Prepare the build environment
+    # 3. Checkout mrhaav/packages source (contains atc-fib-fm350_gl and luci-proto-atc)
+    - name: Checkout mrhaav/packages
+      uses: actions/checkout@v4
+      with:
+        repository: mrhaav/openwrt-packages
+        path: mrhaav-packages
+        ref: main
+        sparse-checkout: |
+          atc-fib-fm350_gl
+          luci/protocols/luci-proto-atc
+
+    # 4. Prepare the build environment
     - name: Prepare build environment
       run: |
         sudo apt-get update
@@ -86,64 +95,66 @@ jobs:
         wget -q "$SDK_URL"
         tar --zstd -xf immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64.tar.zst
 
-    # 4. Add both local feeds
-    - name: Add feeds and update (local QModem link)
+    # 5. Add all local feeds
+    - name: Add feeds and update
       run: |
         cd immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64
         rm -rf feeds/base
+        # Remove any previous qmodem feed line
         sed -i '/^src-[a-z]* qmodem /d' feeds.conf.default
+        # Add QModem feed
         echo "src-link qmodem ${{ github.workspace }}/qmodem-source" >> feeds.conf.default
+        # Add quectel-timesync feed (point to openwrt subdirectory)
+        echo "src-link quectel-timesync ${{ github.workspace }}/quectel-timesync-source/openwrt/quectel-timesync" >> feeds.conf.default
+        # Add atc-fib-fm350_gl feed
+        echo "src-link atc-fib-fm350_gl ${{ github.workspace }}/mrhaav-packages/atc-fib-fm350_gl" >> feeds.conf.default
+        # Add luci-proto-atc feed
+        echo "src-link luci-proto-atc ${{ github.workspace }}/mrhaav-packages/luci/protocols/luci-proto-atc" >> feeds.conf.default
+        # Update and install all feeds
         ./scripts/feeds update -a
         ./scripts/feeds install -a -p qmodem
+        ./scripts/feeds install -a -p quectel-timesync
+        ./scripts/feeds install -a -p atc-fib-fm350_gl
+        ./scripts/feeds install -a -p luci-proto-atc
 
-    # Integrate quectel-timesync by copying its source into the SDK
-    - name: Add quectel-timesync package to SDK
-      run: |
-        cd immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64
-        mkdir -p package/utils/quectel-timesync
-        cp -r ${{ github.workspace }}/quectel-timesync-source/openwrt/quectel-timesync/* \
-              package/utils/quectel-timesync/
-        ./scripts/feeds install quectel-timesync
-
-    # 5. Configure build options
+    # 6. Configure build options
     - name: Configure build options
       run: |
         cd immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64
-        # QModem Next + monitor
         echo "CONFIG_PACKAGE_luci-app-qmodem-next=m" >> .config
         echo "CONFIG_PACKAGE_luci-app-qmodem-monitor=m" >> .config
         echo "CONFIG_PACKAGE_quectel_CM_5G_M=m" >> .config
         echo "# CONFIG_PACKAGE_quectel-CM-5G is not set" >> .config
         echo "# CONFIG_PACKAGE_quectel-cm is not set" >> .config
 
-        # Enable the vendor QMI kernel modules
         echo "CONFIG_PACKAGE_kmod-qmi-wwan-q=m" >> .config
         echo "CONFIG_PACKAGE_kmod-qmi-wwan-f=m" >> .config
         echo "CONFIG_PACKAGE_kmod-qmi-wwan-s=m" >> .config
 
-        # Tell LuCI to use the vendor QMI drivers
         echo "CONFIG_PACKAGE_luci-app-qmodem_INCLUDE_vendor-qmi-wwan=y" >> .config
         echo "# CONFIG_PACKAGE_luci-app-qmodem_INCLUDE_generic-qmi-wwan is not set" >> .config
 
-        # Disable MHI (PCIe) drivers
         echo "# CONFIG_PACKAGE_quectel_MHI is not set" >> .config
         echo "# CONFIG_PACKAGE_fibocom_MHI is not set" >> .config
         echo "# CONFIG_PACKAGE_simcom_MHI is not set" >> .config
 
-        # quectel-timesync
         echo "CONFIG_PACKAGE_quectel-timesync=m" >> .config
+        echo "CONFIG_PACKAGE_atc-fib-fm350_gl=m" >> .config
+        echo "CONFIG_PACKAGE_luci-proto-atc=m" >> .config
 
         make defconfig
 
-    # 6. Build all packages
+    # 7. Build all packages
     - name: Build packages
       run: |
         cd immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64
         make package/luci-app-qmodem-next/compile V=s
         make package/luci-app-qmodem-monitor/compile V=s
         make package/quectel-timesync/compile V=s
+        make package/atc-fib-fm350_gl/compile V=s
+        make package/luci-proto-atc/compile V=s
 
-    # 7. Collect all IPK files
+    # 8. Collect all IPK files
     - name: Collect IPK files
       run: |
         mkdir -p ipks
@@ -151,10 +162,12 @@ jobs:
         ARCH="arm_cortex-a9_vfpv3-d16"
         # QModem feed packages
         cp "$SDK_DIR/bin/packages/$ARCH/qmodem/"*.ipk ipks/ 2>/dev/null
-        # quectel-timesync (now in standard packages directory, not in a separate feed)
-        cp "$SDK_DIR/bin/packages/$ARCH/packages/quectel-timesync_"*.ipk ipks/ 2>/dev/null || \
-        cp "$SDK_DIR/bin/packages/$ARCH/base/quectel-timesync_"*.ipk ipks/ 2>/dev/null || \
-        echo "Note: quectel-timesync IPK not found"
+        # quectel-timesync feed
+        cp "$SDK_DIR/bin/packages/$ARCH/quectel-timesync/"*.ipk ipks/ 2>/dev/null
+        # atc-fib-fm350_gl feed
+        cp "$SDK_DIR/bin/packages/$ARCH/atc-fib-fm350_gl/"*.ipk ipks/ 2>/dev/null
+        # luci-proto-atc feed
+        cp "$SDK_DIR/bin/packages/$ARCH/luci-proto-atc/"*.ipk ipks/ 2>/dev/null
         # Required user-space dependencies
         for pkg in curl terminfo bc coreutils coreutils-stat usbutils; do
           cp "$SDK_DIR/bin/packages/$ARCH/packages/${pkg}_"*.ipk ipks/ 2>/dev/null || echo "Note: $pkg not found"
@@ -162,12 +175,12 @@ jobs:
         echo "Contents of ipks/:"
         ls -l ipks/
 
-    # 8. Publish the release
+    # 9. Publish the release
     - name: Create Release
       uses: softprops/action-gh-release@v2
       with:
         files: ipks/*
         tag_name: qmodem-24.10.4-${{ needs.check-and-build.outputs.upstream_sha }}
-        name: "QModem + quectel-timesync for ImmortalWrt 24.10.4 (mvebu/cortexa9) – ${{ needs.check-and-build.outputs.upstream_sha }}"
+        name: "QModem + extras for ImmortalWrt 24.10.4 (mvebu/cortexa9) – ${{ needs.check-and-build.outputs.upstream_sha }}"
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
