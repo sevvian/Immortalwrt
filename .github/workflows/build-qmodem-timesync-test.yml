@@ -87,19 +87,23 @@ jobs:
         tar --zstd -xf immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64.tar.zst
 
     # 4. Add both local feeds
-    - name: Add feeds and update (local QModem + quectel-timesync)
+    - name: Add feeds and update (local QModem link)
       run: |
         cd immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64
         rm -rf feeds/base
         sed -i '/^src-[a-z]* qmodem /d' feeds.conf.default
-        sed -i '/^src-[a-z]* quectel-timesync /d' feeds.conf.default
         echo "src-link qmodem ${{ github.workspace }}/qmodem-source" >> feeds.conf.default
-        echo "src-link quectel-timesync ${{ github.workspace }}/quectel-timesync-source/openwrt/quectel-timesync" >> feeds.conf.default
         ./scripts/feeds update -a
-        # Install QModem packages
         ./scripts/feeds install -a -p qmodem
-        # Install quectel-timesync
-        ./scripts/feeds install -a -p quectel-timesync
+
+    # Integrate quectel-timesync by copying its source into the SDK
+    - name: Add quectel-timesync package to SDK
+      run: |
+        cd immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64
+        mkdir -p package/utils/quectel-timesync
+        cp -r ${{ github.workspace }}/quectel-timesync-source/openwrt/quectel-timesync/* \
+              package/utils/quectel-timesync/
+        ./scripts/feeds install quectel-timesync
 
     # 5. Configure build options
     - name: Configure build options
@@ -145,10 +149,12 @@ jobs:
         mkdir -p ipks
         SDK_DIR=$(ls -d immortalwrt-sdk-* | head -1)
         ARCH="arm_cortex-a9_vfpv3-d16"
-        # All QModem feed packages (includes kmod-qmi_wwan_q etc.)
+        # QModem feed packages
         cp "$SDK_DIR/bin/packages/$ARCH/qmodem/"*.ipk ipks/ 2>/dev/null
-        # quectel-timesync packages
-        cp "$SDK_DIR/bin/packages/$ARCH/quectel-timesync/"*.ipk ipks/ 2>/dev/null
+        # quectel-timesync (now in standard packages directory, not in a separate feed)
+        cp "$SDK_DIR/bin/packages/$ARCH/packages/quectel-timesync_"*.ipk ipks/ 2>/dev/null || \
+        cp "$SDK_DIR/bin/packages/$ARCH/base/quectel-timesync_"*.ipk ipks/ 2>/dev/null || \
+        echo "Note: quectel-timesync IPK not found"
         # Required user-space dependencies
         for pkg in curl terminfo bc coreutils coreutils-stat usbutils; do
           cp "$SDK_DIR/bin/packages/$ARCH/packages/${pkg}_"*.ipk ipks/ 2>/dev/null || echo "Note: $pkg not found"
