@@ -95,34 +95,27 @@ jobs:
         wget -q "$SDK_URL"
         tar --zstd -xf immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64.tar.zst
 
-    # 5. Create a unified local feed for extra packages
-    - name: Prepare extra packages feed
-      run: |
-        mkdir -p local-extra-packages
-        # quectel-timesync
-        cp -r quectel-timesync-source/openwrt/quectel-timesync local-extra-packages/quectel-timesync
-        # atc-fib-fm350_gl
-        cp -r mrhaav-packages/atc-fib-fm350_gl local-extra-packages/atc-fib-fm350_gl
-        # luci-proto-atc
-        cp -r mrhaav-packages/luci/protocols/luci-proto-atc local-extra-packages/luci-proto-atc
-
-    # 6. Set up feeds (only two: QModem and extra)
-    - name: Configure and update feeds
+    # 5. Create a clean feeds.conf.default with four feeds
+    - name: Set up feeds
       run: |
         cd immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64
         # Remove broken base feed
         rm -rf feeds/base
-        # Write a clean feeds.conf.default with our two feeds
-        cat > feeds.conf.default << 'EOF'
-        src-link qmodem {{WORKSPACE}}/qmodem-source
-        src-link extra {{WORKSPACE}}/local-extra-packages
-        EOF
-        sed -i "s|{{WORKSPACE}}|${{ github.workspace }}|g" feeds.conf.default
+        # Delete old feeds.conf.default to start fresh
+        rm -f feeds.conf.default
+        # Build the file with exact paths (no placeholder)
+        printf '%s\n' "src-link qmodem ${{ github.workspace }}/qmodem-source" > feeds.conf.default
+        printf '%s\n' "src-link quectel-timesync ${{ github.workspace }}/quectel-timesync-source/openwrt/quectel-timesync" >> feeds.conf.default
+        printf '%s\n' "src-link atc-fib-fm350_gl ${{ github.workspace }}/mrhaav-packages/atc-fib-fm350_gl" >> feeds.conf.default
+        printf '%s\n' "src-link luci-proto-atc ${{ github.workspace }}/mrhaav-packages/luci/protocols/luci-proto-atc" >> feeds.conf.default
         # Update and install all feeds
         ./scripts/feeds update -a
-        ./scripts/feeds install -a
+        ./scripts/feeds install -a -p qmodem
+        ./scripts/feeds install -a -p quectel-timesync
+        ./scripts/feeds install -a -p atc-fib-fm350_gl
+        ./scripts/feeds install -a -p luci-proto-atc
 
-    # 7. Configure build options
+    # 6. Configure build options
     - name: Configure build options
       run: |
         cd immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64
@@ -149,7 +142,7 @@ jobs:
 
         make defconfig
 
-    # 8. Build all packages
+    # 7. Build all packages
     - name: Build packages
       run: |
         cd immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64
@@ -159,7 +152,7 @@ jobs:
         make package/atc-fib-fm350_gl/compile V=s
         make package/luci-proto-atc/compile V=s
 
-    # 9. Collect all IPK files
+    # 8. Collect IPK files
     - name: Collect IPK files
       run: |
         mkdir -p ipks
@@ -167,8 +160,12 @@ jobs:
         ARCH="arm_cortex-a9_vfpv3-d16"
         # QModem feed packages
         cp "$SDK_DIR/bin/packages/$ARCH/qmodem/"*.ipk ipks/ 2>/dev/null
-        # Extra packages from the unified feed
-        cp "$SDK_DIR/bin/packages/$ARCH/extra/"*.ipk ipks/ 2>/dev/null
+        # quectel-timesync feed
+        cp "$SDK_DIR/bin/packages/$ARCH/quectel-timesync/"*.ipk ipks/ 2>/dev/null
+        # atc-fib-fm350_gl feed
+        cp "$SDK_DIR/bin/packages/$ARCH/atc-fib-fm350_gl/"*.ipk ipks/ 2>/dev/null
+        # luci-proto-atc feed
+        cp "$SDK_DIR/bin/packages/$ARCH/luci-proto-atc/"*.ipk ipks/ 2>/dev/null
         # Required user-space dependencies
         for pkg in curl terminfo bc coreutils coreutils-stat usbutils; do
           cp "$SDK_DIR/bin/packages/$ARCH/packages/${pkg}_"*.ipk ipks/ 2>/dev/null || echo "Note: $pkg not found"
@@ -176,7 +173,7 @@ jobs:
         echo "Contents of ipks/:"
         ls -l ipks/
 
-    # 10. Publish the release
+    # 9. Publish the release
     - name: Create Release
       uses: softprops/action-gh-release@v2
       with:
