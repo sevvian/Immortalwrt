@@ -26,9 +26,12 @@ jobs:
         run: |
           SDK_URL="https://downloads.openwrt.org/releases/24.10.4/targets/mvebu/cortexa9/openwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64.tar.zst"
           wget -q $SDK_URL -O sdk.tar.zst
-          # Verified Method: Create directory first, then extract into it stripping the root folder
           mkdir sdk
           tar -I zstd -xf sdk.tar.zst -C sdk --strip-components=1
+          
+          # CRITICAL FIX: Create missing directories required by the OpenWrt Prerequisite system
+          mkdir -p sdk/host sdk/tmp sdk/staging_dir/host
+          touch sdk/host/.prereq-build
 
       - name: Update and Install Feeds
         working-directory: sdk
@@ -38,53 +41,53 @@ jobs:
 
       - name: Integrate QModem Packages
         run: |
-          # Create a custom category in the SDK
           mkdir -p sdk/package/qmodem
-          # Copy each sub-driver folder into the SDK package tree
+          # Copy driver subdirectories to the SDK
           cp -r qmodem-src/driver/* sdk/package/qmodem/
           
-          # Refresh the package index to include the new QModem folders
           cd sdk
+          # Re-index to find the new packages
           ./scripts/feeds update -i
           ./scripts/feeds install -a
 
-      - name: Configure and Build Packages
+      - name: Compile QModem Packages
         working-directory: sdk
-        env:
-          # Ensure toolchain is in path for kernel modules
-          STAGING_DIR: ${{ github.workspace }}/sdk/staging_dir
         run: |
-          # Generate the default configuration
-          make defconfig
+          # The SDK architecture is already fixed. We just need to enable the specific packages.
+          # We use 'make defconfig' only after the packages are in place.
           
-          # Find all packages we just added and enable them in .config
-          # We search for 'Package/' or 'KernelPackage/' definitions in the Makefiles
+          # Step 1: Find and enable the packages in .config
           for makefile in $(find package/qmodem -name Makefile); do
-            # Extract package names (e.g., quectel-cm or kmod-quectel-qmi-wwan)
-            PKG_NAME=$(grep -oP '(?<=Package/)\w+([-]\w+)*' $makefile | head -n 1)
-            KMOD_NAME=$(grep -oP '(?<=KernelPackage/)\w+([-]\w+)*' $makefile | head -n 1)
+            # Find Package name (Apps)
+            PKG=$(grep -oP '(?<=Package/)\w+([-]\w+)*' $makefile | head -n 1)
+            # Find KernelPackage name (Drivers)
+            KMOD=$(grep -oP '(?<=KernelPackage/)\w+([-]\w+)*' $makefile | head -n 1)
             
-            if [ ! -z "$PKG_NAME" ]; then
-              echo "Enabling App: CONFIG_PACKAGE_$PKG_NAME=m" >> .config
-              echo "building $PKG_NAME..."
+            if [ ! -z "$PKG" ]; then
+              echo "CONFIG_PACKAGE_$PKG=m" >> .config
             fi
-            if [ ! -z "$KMOD_NAME" ]; then
-              echo "Enabling Kmod: CONFIG_PACKAGE_kmod-$KMOD_NAME=m" >> .config
-              echo "building kmod-$KMOD_NAME..."
+            if [ ! -z "$KMOD" ]; then
+              echo "CONFIG_PACKAGE_kmod-$KMOD=m" >> .config
             fi
           done
 
-          # Run the build for all packages in the qmodem subdirectory
+          # Step 2: Expand dependencies and finalize configuration
+          make defconfig
+          
+          # Step 3: Build
+          # We build the entire qmodem directory to catch all drivers/apps
           make package/qmodem/compile V=s -j$(nproc)
 
       - name: Collect Artifacts
         run: |
           mkdir -p output
-          # Find all .ipk files generated in the bin directory
-          find sdk/bin/ -name "*.ipk" -exec cp {} output/ \;
+          # Copy .ipk files from the bin/packages/ architecture folder
+          find sdk/bin/packages/ -name "*.ipk" -exec cp {} output/ \;
+          # Copy .ipk files from the bin/targets/ kernel folder (for kmods)
+          find sdk/bin/targets/ -name "*.ipk" -exec cp {} output/ \;
 
       - name: Upload IPK Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: QModem-OpenWrt-24.10.4-mvebu-v3
+          name: QModem-OpenWrt-24.10.4-mvebu-v4
           path: output/
