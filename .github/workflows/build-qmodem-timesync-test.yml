@@ -4,15 +4,12 @@ on:
   workflow_dispatch:
 
 jobs:
-  # ----------------------------------------------------------------------
-  # 1. Check for upstream changes (same as before)
-  # ----------------------------------------------------------------------
+  # 1. Check for upstream changes (unchanged)
   check-and-build:
     runs-on: ubuntu-latest
     outputs:
       build_needed: ${{ steps.check.outputs.build_needed }}
       upstream_sha: ${{ steps.check.outputs.upstream_sha }}
-
     steps:
     - name: Check latest upstream commit
       id: check
@@ -41,9 +38,7 @@ jobs:
         restore-keys: |
           qmodem-last-built-sha-24.10.4-
 
-  # ----------------------------------------------------------------------
   # 2. Build QModem (Next, monitor, kmods, user‑space deps)
-  # ----------------------------------------------------------------------
   build-qmodem:
     needs: check-and-build
     if: needs.check-and-build.outputs.build_needed == 'true'
@@ -123,9 +118,7 @@ jobs:
         name: qmodem-ipks
         path: ipks/*.ipk
 
-  # ----------------------------------------------------------------------
-  # 3. Build quectel-timesync
-  # ----------------------------------------------------------------------
+  # 3. Build quectel-timesync (clean feed)
   build-quectel-timesync:
     needs: check-and-build
     if: needs.check-and-build.outputs.build_needed == 'true'
@@ -159,14 +152,19 @@ jobs:
         wget -q "$SDK_URL"
         tar --zstd -xf immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64.tar.zst
 
-    - name: Set up quectel-timesync feed
+    - name: Create clean feed for quectel-timesync
+      run: |
+        mkdir -p timesync-feed/quectel-timesync
+        cp -r quectel-timesync-source/openwrt/quectel-timesync/* timesync-feed/quectel-timesync/
+
+    - name: Set up feeds
       run: |
         cd immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64
         rm -rf feeds/base
         rm -f feeds.conf feeds.conf.default
-        printf '%s\n' "src-link quectel-timesync ${{ github.workspace }}/quectel-timesync-source/openwrt/quectel-timesync" > feeds.conf.default
+        printf '%s\n' "src-link timesync-feed ${{ github.workspace }}/timesync-feed" > feeds.conf.default
         ./scripts/feeds update -a
-        ./scripts/feeds install -a -p quectel-timesync
+        ./scripts/feeds install -a -p timesync-feed
 
     - name: Build quectel-timesync
       run: |
@@ -180,7 +178,7 @@ jobs:
         mkdir -p ipks
         SDK_DIR=$(ls -d immortalwrt-sdk-* | head -1)
         ARCH="arm_cortex-a9_vfpv3-d16"
-        cp "$SDK_DIR/bin/packages/$ARCH/quectel-timesync/"*.ipk ipks/ 2>/dev/null
+        cp "$SDK_DIR/bin/packages/$ARCH/timesync-feed/"*.ipk ipks/ 2>/dev/null
         ls -l ipks/
 
     - name: Upload IPKs
@@ -189,9 +187,7 @@ jobs:
         name: quectel-timesync-ipks
         path: ipks/*.ipk
 
-  # ----------------------------------------------------------------------
-  # 4. Build atc-fib-fm350_gl and luci-proto-atc (combined job)
-  # ----------------------------------------------------------------------
+  # 4. Build atc-fib-fm350_gl and luci-proto-atc (single feed)
   build-mrhaav:
     needs: check-and-build
     if: needs.check-and-build.outputs.build_needed == 'true'
@@ -228,16 +224,21 @@ jobs:
         wget -q "$SDK_URL"
         tar --zstd -xf immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64.tar.zst
 
-    - name: Set up feeds (two separate feeds)
+    - name: Create clean feed for mrhaav packages
+      run: |
+        mkdir -p mrhaav-feed/atc-fib-fm350_gl
+        mkdir -p mrhaav-feed/luci-proto-atc
+        cp -r mrhaav-packages/atc-fib-fm350_gl/* mrhaav-feed/atc-fib-fm350_gl/
+        cp -r mrhaav-packages/luci/protocols/luci-proto-atc/* mrhaav-feed/luci-proto-atc/
+
+    - name: Set up feeds
       run: |
         cd immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64
         rm -rf feeds/base
         rm -f feeds.conf feeds.conf.default
-        printf '%s\n' "src-link atc-fib-fm350_gl ${{ github.workspace }}/mrhaav-packages/atc-fib-fm350_gl" > feeds.conf.default
-        printf '%s\n' "src-link luci-proto-atc ${{ github.workspace }}/mrhaav-packages/luci/protocols/luci-proto-atc" >> feeds.conf.default
+        printf '%s\n' "src-link mrhaav-feed ${{ github.workspace }}/mrhaav-feed" > feeds.conf.default
         ./scripts/feeds update -a
-        ./scripts/feeds install -a -p atc-fib-fm350_gl
-        ./scripts/feeds install -a -p luci-proto-atc
+        ./scripts/feeds install -a -p mrhaav-feed
 
     - name: Build packages
       run: |
@@ -253,8 +254,7 @@ jobs:
         mkdir -p ipks
         SDK_DIR=$(ls -d immortalwrt-sdk-* | head -1)
         ARCH="arm_cortex-a9_vfpv3-d16"
-        cp "$SDK_DIR/bin/packages/$ARCH/atc-fib-fm350_gl/"*.ipk ipks/ 2>/dev/null
-        cp "$SDK_DIR/bin/packages/$ARCH/luci-proto-atc/"*.ipk ipks/ 2>/dev/null
+        cp "$SDK_DIR/bin/packages/$ARCH/mrhaav-feed/"*.ipk ipks/ 2>/dev/null
         ls -l ipks/
 
     - name: Upload IPKs
@@ -263,9 +263,7 @@ jobs:
         name: mrhaav-ipks
         path: ipks/*.ipk
 
-  # ----------------------------------------------------------------------
   # 5. Combine all artifacts and create a single release
-  # ----------------------------------------------------------------------
   release:
     needs: [build-qmodem, build-quectel-timesync, build-mrhaav]
     runs-on: ubuntu-latest
