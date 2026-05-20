@@ -237,14 +237,14 @@ jobs:
         ./scripts/feeds update -a
         ./scripts/feeds install -a
 
-    - name: Build packages
+    - name: Build packages (use full feed paths)
       run: |
         cd immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64
         echo "CONFIG_PACKAGE_atc-fib-fm350_gl=m" >> .config
         echo "CONFIG_PACKAGE_luci-proto-atc=m" >> .config
         make defconfig
-        make package/atc-fib-fm350_gl/compile V=s
-        make package/luci-proto-atc/compile V=s
+        make package/feeds/atcfibfm350gl/atc-fib-fm350_gl/compile V=s
+        make package/feeds/luciprotoatc/luci-proto-atc/compile V=s
 
     - name: Collect IPKs
       run: |
