@@ -62,7 +62,7 @@ jobs:
         path: quectel-timesync-source
         ref: master
 
-    # 3. Checkout mrhaav/packages source (contains atc-fib-fm350_gl and luci-proto-atc)
+    # 3. Checkout mrhaav/packages
     - name: Checkout mrhaav/packages
       uses: actions/checkout@v4
       with:
@@ -95,22 +95,18 @@ jobs:
         wget -q "$SDK_URL"
         tar --zstd -xf immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64.tar.zst
 
-    # 5. Add all local feeds
+    # 5. Add feeds using separate feeds.conf
     - name: Add feeds and update
       run: |
         cd immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64
         rm -rf feeds/base
-        # Remove any previous qmodem feed line
-        sed -i '/^src-[a-z]* qmodem /d' feeds.conf.default
-        # Add QModem feed
-        echo "src-link qmodem ${{ github.workspace }}/qmodem-source" >> feeds.conf.default
-        # Add quectel-timesync feed (point to openwrt subdirectory)
-        echo "src-link quectel-timesync ${{ github.workspace }}/quectel-timesync-source/openwrt/quectel-timesync" >> feeds.conf.default
-        # Add atc-fib-fm350_gl feed
-        echo "src-link atc-fib-fm350_gl ${{ github.workspace }}/mrhaav-packages/atc-fib-fm350_gl" >> feeds.conf.default
-        # Add luci-proto-atc feed
-        echo "src-link luci-proto-atc ${{ github.workspace }}/mrhaav-packages/luci/protocols/luci-proto-atc" >> feeds.conf.default
-        # Update and install all feeds
+        cat > feeds.conf << 'EOF'
+        src-link qmodem {{WORKSPACE}}/qmodem-source
+        src-link quectel-timesync {{WORKSPACE}}/quectel-timesync-source/openwrt/quectel-timesync
+        src-link atc-fib-fm350_gl {{WORKSPACE}}/mrhaav-packages/atc-fib-fm350_gl
+        src-link luci-proto-atc {{WORKSPACE}}/mrhaav-packages/luci/protocols/luci-proto-atc
+        EOF
+        sed -i "s|{{WORKSPACE}}|${{ github.workspace }}|g" feeds.conf
         ./scripts/feeds update -a
         ./scripts/feeds install -a -p qmodem
         ./scripts/feeds install -a -p quectel-timesync
@@ -154,21 +150,16 @@ jobs:
         make package/atc-fib-fm350_gl/compile V=s
         make package/luci-proto-atc/compile V=s
 
-    # 8. Collect all IPK files
+    # 8. Collect IPK files
     - name: Collect IPK files
       run: |
         mkdir -p ipks
         SDK_DIR=$(ls -d immortalwrt-sdk-* | head -1)
         ARCH="arm_cortex-a9_vfpv3-d16"
-        # QModem feed packages
         cp "$SDK_DIR/bin/packages/$ARCH/qmodem/"*.ipk ipks/ 2>/dev/null
-        # quectel-timesync feed
         cp "$SDK_DIR/bin/packages/$ARCH/quectel-timesync/"*.ipk ipks/ 2>/dev/null
-        # atc-fib-fm350_gl feed
         cp "$SDK_DIR/bin/packages/$ARCH/atc-fib-fm350_gl/"*.ipk ipks/ 2>/dev/null
-        # luci-proto-atc feed
         cp "$SDK_DIR/bin/packages/$ARCH/luci-proto-atc/"*.ipk ipks/ 2>/dev/null
-        # Required user-space dependencies
         for pkg in curl terminfo bc coreutils coreutils-stat usbutils; do
           cp "$SDK_DIR/bin/packages/$ARCH/packages/${pkg}_"*.ipk ipks/ 2>/dev/null || echo "Note: $pkg not found"
         done
