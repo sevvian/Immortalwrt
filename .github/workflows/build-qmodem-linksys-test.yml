@@ -98,10 +98,10 @@ jobs:
         echo "# CONFIG_PACKAGE_quectel-CM-5G is not set" >> .config
         echo "# CONFIG_PACKAGE_quectel-cm is not set" >> .config
 
-        # --- Enable the vendor QMI kernel modules (build them) ---
-        echo "CONFIG_PACKAGE_quectel_QMI_WWAN=m" >> .config
-        echo "CONFIG_PACKAGE_fibocom_QMI_WWAN=m" >> .config
-        echo "CONFIG_PACKAGE_simcom_QMI_WWAN=m" >> .config
+        # --- Enable the vendor QMI kernel modules (correct symbol names) ---
+        echo "CONFIG_PACKAGE_kmod-qmi-wwan-q=m" >> .config
+        echo "CONFIG_PACKAGE_kmod-qmi-wwan-f=m" >> .config
+        echo "CONFIG_PACKAGE_kmod-qmi-wwan-s=m" >> .config
 
         # --- Tell LuCI to use the vendor QMI drivers (this creates the dependency) ---
         echo "CONFIG_PACKAGE_luci-app-qmodem_INCLUDE_vendor-qmi-wwan=y" >> .config
@@ -122,33 +122,17 @@ jobs:
         make package/luci-app-qmodem-monitor/compile V=s
 
     # 6. Collect IPKs – QModem feed, user‑space tools, AND all required kernel modules
-    - name: Collect IPK files (QModem + user-space + kmods)
+    - name: Collect IPK files (QModem feed + user-space deps)
       run: |
         mkdir -p ipks
         SDK_DIR=$(ls -d immortalwrt-sdk-* | head -1)
         ARCH="arm_cortex-a9_vfpv3-d16"
-        # All QModem feed packages (includes the newly built kmod-qmi_wwan_q etc.)
+        # All QModem feed packages (includes luci, qmodem, kmod-qmi_wwan_q, etc.)
         cp "$SDK_DIR/bin/packages/$ARCH/qmodem/"*.ipk ipks/ 2>/dev/null
-
-        # Required user‑space dependencies
+        # Required user-space dependencies
         for pkg in curl terminfo bc coreutils coreutils-stat usbutils; do
           cp "$SDK_DIR/bin/packages/$ARCH/packages/${pkg}_"*.ipk ipks/ 2>/dev/null || echo "Note: $pkg not found"
         done
-
-        # Essential kernel modules – the ones unconditionally needed by qmodem
-        # (both from base and packages subdirectories)
-        for kmod in \
-          kmod-usb2 kmod-usb3 kmod-usb-serial kmod-usb-serial-option \
-          kmod-usb-serial-qualcomm kmod-usb-net kmod-usb-acm kmod-usb-wdm \
-          kmod-usb-net-cdc-ether kmod-usb-net-cdc-mbim kmod-usb-net-rndis \
-          kmod-usb-net-cdc-ncm kmod-usb-net-huawei-cdc-ncm \
-          kmod-usb-net-qmi-wwan; do
-          # Look in base first, then packages
-          cp "$SDK_DIR/bin/packages/$ARCH/base/${kmod}_"*.ipk ipks/ 2>/dev/null || \
-          cp "$SDK_DIR/bin/packages/$ARCH/packages/${kmod}_"*.ipk ipks/ 2>/dev/null || \
-          echo "Note: $kmod not found in SDK (may be built-in)"
-        done
-
         echo "Contents of ipks/:"
         ls -l ipks/
 
