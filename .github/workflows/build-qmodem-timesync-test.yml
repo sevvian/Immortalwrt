@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  # 1. Check for upstream changes (unchanged)
+  # 1. Check for upstream changes (QModem)
   check-and-build:
     runs-on: ubuntu-latest
     outputs:
@@ -63,7 +63,7 @@ jobs:
       uses: actions/cache@v4
       with:
         path: immortalwrt-sdk-*
-        key: sdk-mvebu-cortexa9-24.10.4-qmodem-v1
+        key: sdk-mvebu-cortexa9-24.10.4-v1
 
     - name: Download & extract SDK (24.10.4)
       if: steps.cache-sdk.outputs.cache-hit != 'true'
@@ -72,14 +72,18 @@ jobs:
         wget -q "$SDK_URL"
         tar --zstd -xf immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64.tar.zst
 
-    - name: Set up QModem feed
+    - name: Set up feeds (QModem + ImmortalWrt standard feeds)
       run: |
         cd immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64
         rm -rf feeds/base
         rm -f feeds.conf feeds.conf.default
-        printf '%s\n' "src-link qmodem ${{ github.workspace }}/qmodem-source" > feeds.conf.default
+        printf '%s\n' "src-link qmodem ${{ github.workspace }}/qmodem-source" >> feeds.conf.default
+        printf '%s\n' "src-git luci https://github.com/immortalwrt/luci.git;openwrt-24.10" >> feeds.conf.default
+        printf '%s\n' "src-git packages https://github.com/immortalwrt/packages.git;openwrt-24.10" >> feeds.conf.default
+        printf '%s\n' "src-git routing https://github.com/immortalwrt/routing.git;openwrt-24.10" >> feeds.conf.default
+        printf '%s\n' "src-git telephony https://github.com/immortalwrt/telephony.git;openwrt-24.10" >> feeds.conf.default
         ./scripts/feeds update -a
-        ./scripts/feeds install -a -p qmodem
+        ./scripts/feeds install -a
 
     - name: Configure and build QModem packages
       run: |
@@ -101,14 +105,18 @@ jobs:
         make package/luci-app-qmodem-next/compile V=s
         make package/luci-app-qmodem-monitor/compile V=s
 
-    - name: Collect QModem IPKs
+    - name: Collect QModem + dependency IPKs
       run: |
         mkdir -p ipks
         SDK_DIR=$(ls -d immortalwrt-sdk-* | head -1)
         ARCH="arm_cortex-a9_vfpv3-d16"
+        # QModem feed packages
         cp "$SDK_DIR/bin/packages/$ARCH/qmodem/"*.ipk ipks/ 2>/dev/null
+        # Required user‑space dependencies (now built from the packages feed)
         for pkg in curl terminfo bc coreutils coreutils-stat usbutils; do
-          cp "$SDK_DIR/bin/packages/$ARCH/packages/${pkg}_"*.ipk ipks/ 2>/dev/null || echo "Note: $pkg not found"
+          cp "$SDK_DIR/bin/packages/$ARCH/packages/${pkg}_"*.ipk ipks/ 2>/dev/null || \
+          cp "$SDK_DIR/bin/packages/$ARCH/base/${pkg}_"*.ipk ipks/ 2>/dev/null || \
+          echo "Note: $pkg not found"
         done
         ls -l ipks/
 
@@ -118,7 +126,7 @@ jobs:
         name: qmodem-ipks
         path: ipks/*.ipk
 
-  # 3. Build quectel-timesync (feed name without hyphen)
+  # 3. Build quectel-timesync (using ImmortalWrt SDK action)
   build-quectel-timesync:
     needs: check-and-build
     if: needs.check-and-build.outputs.build_needed == 'true'
@@ -128,57 +136,20 @@ jobs:
       uses: actions/checkout@v4
       with:
         repository: freifunk-darmstadt/quectel-timesync
-        path: quectel-timesync-source
-        ref: master
+        path: quectel-source
 
-    - name: Prepare build environment
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y build-essential clang flex bison g++ gawk \
-        gcc-multilib g++-multilib gettext git libncurses-dev libssl-dev \
-        python3-dev python3-setuptools rsync unzip zlib1g-dev file wget zstd
-
-    - name: Restore SDK cache
-      id: cache-sdk
-      uses: actions/cache@v4
-      with:
-        path: immortalwrt-sdk-*
-        key: sdk-mvebu-cortexa9-24.10.4-quectel-timesync-v1
-
-    - name: Download & extract SDK (24.10.4)
-      if: steps.cache-sdk.outputs.cache-hit != 'true'
-      run: |
-        SDK_URL="https://downloads.immortalwrt.org/releases/24.10.4/targets/mvebu/cortexa9/immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64.tar.zst"
-        wget -q "$SDK_URL"
-        tar --zstd -xf immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64.tar.zst
-
-    - name: Create clean feed directory
-      run: |
-        mkdir -p timesync-feed/quectel-timesync
-        cp -r quectel-timesync-source/openwrt/quectel-timesync/* timesync-feed/quectel-timesync/
-
-    - name: Set up feed (feed name without hyphen)
-      run: |
-        cd immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64
-        rm -rf feeds/base
-        rm -f feeds.conf feeds.conf.default
-        printf '%s\n' "src-link quecteltimesync ${{ github.workspace }}/timesync-feed" > feeds.conf.default
-        ./scripts/feeds update -a
-        ./scripts/feeds install -a -p quecteltimesync
-
-    - name: Build quectel-timesync
-      run: |
-        cd immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64
-        echo "CONFIG_PACKAGE_quectel-timesync=m" >> .config
-        make defconfig
-        make package/quectel-timesync/compile V=s
+    - name: Build with ImmortalWrt SDK
+      uses: immortalwrt/gh-action-sdk@master
+      env:
+        ARCH: mvebu-cortexa9-24.10.4
+        NO_DEFAULT_FEEDS: 1
+        FEED_DIR: quectel-source/openwrt
+        PACKAGES: quectel-timesync
 
     - name: Collect IPKs
       run: |
         mkdir -p ipks
-        SDK_DIR=$(ls -d immortalwrt-sdk-* | head -1)
-        ARCH="arm_cortex-a9_vfpv3-d16"
-        cp "$SDK_DIR/bin/packages/$ARCH/quecteltimesync/"*.ipk ipks/ 2>/dev/null
+        find bin -name "quectel-timesync_*.ipk" -exec cp {} ipks/ \;
         ls -l ipks/
 
     - name: Upload IPKs
@@ -187,7 +158,7 @@ jobs:
         name: quectel-timesync-ipks
         path: ipks/*.ipk
 
-  # 4. Build atc-fib-fm350_gl and luci-proto-atc (feed name without hyphen)
+  # 4. Build atc-fib-fm350_gl & luci-proto-atc (using ImmortalWrt SDK action)
   build-mrhaav:
     needs: check-and-build
     if: needs.check-and-build.outputs.build_needed == 'true'
@@ -197,64 +168,30 @@ jobs:
       uses: actions/checkout@v4
       with:
         repository: mrhaav/openwrt-packages
-        path: mrhaav-packages
+        path: mrhaav-source
         ref: main
         sparse-checkout: |
           atc-fib-fm350_gl
           luci/protocols/luci-proto-atc
 
-    - name: Prepare build environment
+    - name: Prepare feed directory
       run: |
-        sudo apt-get update
-        sudo apt-get install -y build-essential clang flex bison g++ gawk \
-        gcc-multilib g++-multilib gettext git libncurses-dev libssl-dev \
-        python3-dev python3-setuptools rsync unzip zlib1g-dev file wget zstd
+        mkdir -p feed/atc-fib-fm350_gl feed/luci-proto-atc
+        cp -r mrhaav-source/atc-fib-fm350_gl/* feed/atc-fib-fm350_gl/
+        cp -r mrhaav-source/luci/protocols/luci-proto-atc/* feed/luci-proto-atc/
 
-    - name: Restore SDK cache
-      id: cache-sdk
-      uses: actions/cache@v4
-      with:
-        path: immortalwrt-sdk-*
-        key: sdk-mvebu-cortexa9-24.10.4-mrhaav-v1
-
-    - name: Download & extract SDK (24.10.4)
-      if: steps.cache-sdk.outputs.cache-hit != 'true'
-      run: |
-        SDK_URL="https://downloads.immortalwrt.org/releases/24.10.4/targets/mvebu/cortexa9/immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64.tar.zst"
-        wget -q "$SDK_URL"
-        tar --zstd -xf immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64.tar.zst
-
-    - name: Create clean feed directory
-      run: |
-        mkdir -p mrhaav-feed/atc-fib-fm350_gl
-        mkdir -p mrhaav-feed/luci-proto-atc
-        cp -r mrhaav-packages/atc-fib-fm350_gl/* mrhaav-feed/atc-fib-fm350_gl/
-        cp -r mrhaav-packages/luci/protocols/luci-proto-atc/* mrhaav-feed/luci-proto-atc/
-
-    - name: Set up feed (feed name without hyphen)
-      run: |
-        cd immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64
-        rm -rf feeds/base
-        rm -f feeds.conf feeds.conf.default
-        printf '%s\n' "src-link mrhaav ${{ github.workspace }}/mrhaav-feed" > feeds.conf.default
-        ./scripts/feeds update -a
-        ./scripts/feeds install -a -p mrhaav
-
-    - name: Build packages
-      run: |
-        cd immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64
-        echo "CONFIG_PACKAGE_atc-fib-fm350_gl=m" >> .config
-        echo "CONFIG_PACKAGE_luci-proto-atc=m" >> .config
-        make defconfig
-        make package/atc-fib-fm350_gl/compile V=s
-        make package/luci-proto-atc/compile V=s
+    - name: Build with ImmortalWrt SDK
+      uses: immortalwrt/gh-action-sdk@master
+      env:
+        ARCH: mvebu-cortexa9-24.10.4
+        NO_DEFAULT_FEEDS: 1
+        FEED_DIR: feed
+        PACKAGES: atc-fib-fm350_gl luci-proto-atc
 
     - name: Collect IPKs
       run: |
         mkdir -p ipks
-        SDK_DIR=$(ls -d immortalwrt-sdk-* | head -1)
-        ARCH="arm_cortex-a9_vfpv3-d16"
-        cp "$SDK_DIR/bin/packages/$ARCH/mrhaav/"*.ipk ipks/ 2>/dev/null
+        find bin -name "atc-fib-fm350_gl_*.ipk" -o -name "luci-proto-atc_*.ipk" | xargs -I{} cp {} ipks/
         ls -l ipks/
 
     - name: Upload IPKs
