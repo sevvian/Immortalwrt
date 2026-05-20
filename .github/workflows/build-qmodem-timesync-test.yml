@@ -72,7 +72,7 @@ jobs:
         wget -q "$SDK_URL"
         tar --zstd -xf immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64.tar.zst
 
-    - name: Set up feeds (QModem + ImmortalWrt standard feeds)
+    - name: Set up feeds (QModem + essential ImmortalWrt feeds)
       run: |
         cd immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64
         rm -rf feeds/base
@@ -80,8 +80,6 @@ jobs:
         printf '%s\n' "src-link qmodem ${{ github.workspace }}/qmodem-source" >> feeds.conf.default
         printf '%s\n' "src-git luci https://github.com/immortalwrt/luci.git;openwrt-24.10" >> feeds.conf.default
         printf '%s\n' "src-git packages https://github.com/immortalwrt/packages.git;openwrt-24.10" >> feeds.conf.default
-        printf '%s\n' "src-git routing https://github.com/immortalwrt/routing.git;openwrt-24.10" >> feeds.conf.default
-        printf '%s\n' "src-git telephony https://github.com/immortalwrt/telephony.git;openwrt-24.10" >> feeds.conf.default
         ./scripts/feeds update -a
         ./scripts/feeds install -a
 
@@ -157,7 +155,7 @@ jobs:
         wget -q "$SDK_URL"
         tar --zstd -xf immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64.tar.zst
 
-    - name: Set up feeds (timesync feed + standard ImmortalWrt)
+    - name: Set up feeds (timesync feed + essential ImmortalWrt)
       run: |
         cd immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64
         rm -rf feeds/base
@@ -165,8 +163,6 @@ jobs:
         printf '%s\n' "src-link quecteltimesync ${{ github.workspace }}/quectel-source/openwrt/quectel-timesync" >> feeds.conf.default
         printf '%s\n' "src-git luci https://github.com/immortalwrt/luci.git;openwrt-24.10" >> feeds.conf.default
         printf '%s\n' "src-git packages https://github.com/immortalwrt/packages.git;openwrt-24.10" >> feeds.conf.default
-        printf '%s\n' "src-git routing https://github.com/immortalwrt/routing.git;openwrt-24.10" >> feeds.conf.default
-        printf '%s\n' "src-git telephony https://github.com/immortalwrt/telephony.git;openwrt-24.10" >> feeds.conf.default
         ./scripts/feeds update -a
         ./scripts/feeds install -a
 
@@ -229,7 +225,7 @@ jobs:
         wget -q "$SDK_URL"
         tar --zstd -xf immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64.tar.zst
 
-    - name: Set up feeds (two separate feeds + standard ImmortalWrt)
+    - name: Set up feeds (mrhaav feeds + essential ImmortalWrt)
       run: |
         cd immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64
         rm -rf feeds/base
@@ -238,8 +234,6 @@ jobs:
         printf '%s\n' "src-link luciprotoatc ${{ github.workspace }}/mrhaav-source/luci/protocols/luci-proto-atc" >> feeds.conf.default
         printf '%s\n' "src-git luci https://github.com/immortalwrt/luci.git;openwrt-24.10" >> feeds.conf.default
         printf '%s\n' "src-git packages https://github.com/immortalwrt/packages.git;openwrt-24.10" >> feeds.conf.default
-        printf '%s\n' "src-git routing https://github.com/immortalwrt/routing.git;openwrt-24.10" >> feeds.conf.default
-        printf '%s\n' "src-git telephony https://github.com/immortalwrt/telephony.git;openwrt-24.10" >> feeds.conf.default
         ./scripts/feeds update -a
         ./scripts/feeds install -a
 
