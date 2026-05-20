@@ -48,6 +48,15 @@ jobs:
       contents: write
 
     steps:
+    # 1. Checkout QModem source locally (outside SDK)
+    - name: Checkout QModem source
+      uses: actions/checkout@v4
+      with:
+        repository: FUjr/QModem
+        path: qmodem-source
+        ref: main
+
+    # 2. Prepare build environment
     - name: Prepare build environment
       run: |
         sudo apt-get update
@@ -55,7 +64,7 @@ jobs:
         gcc-multilib g++-multilib gettext git libncurses-dev libssl-dev \
         python3-dev python3-setuptools rsync unzip zlib1g-dev file wget zstd
 
-    # Cache the SDK directory
+    # 3. Restore SDK cache
     - name: Restore SDK cache
       id: cache-sdk
       uses: actions/cache@v4
@@ -63,6 +72,7 @@ jobs:
         path: immortalwrt-sdk-*
         key: sdk-mvebu-cortexa9-24.10.4-v1
 
+    # 4. Download & extract SDK
     - name: Download & extract SDK (24.10.4)
       if: steps.cache-sdk.outputs.cache-hit != 'true'
       run: |
@@ -70,51 +80,63 @@ jobs:
         wget -q "$SDK_URL"
         tar --zstd -xf immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64.tar.zst
 
-    - name: Add feeds and update (fix detached HEAD)
+    # 5. Add feeds and update (using local source link)
+    - name: Add feeds and update (local QModem link)
       run: |
         cd immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64
         rm -rf feeds/base
-        sed -i '/^src-git qmodem /d' feeds.conf.default
-        echo "src-git qmodem https://github.com/FUjr/QModem.git;main" >> feeds.conf.default
+        # Link the local QModem checkout
+        echo "src-link qmodem ${{ github.workspace }}/qmodem-source" >> feeds.conf.default
         ./scripts/feeds update -a
-        ./scripts/feeds install luci-app-qmodem-next
-        ./scripts/feeds install luci-app-qmodem-monitor
-        ./scripts/feeds install qmodem_monitor
-        ./scripts/feeds install sms-forwarder-next
-        ./scripts/feeds install qmodem
+        # Install ALL QModem packages to ensure dependencies are resolved
+        ./scripts/feeds install -a -p qmodem
 
-    - name: Configure build options (disable all optional driver packages)
+    # 6. Configure build options
+    - name: Configure build options
       run: |
         cd immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64
-        echo "CONFIG_PACKAGE_quectel_CM_5G_M=y" >> .config
-        echo "# CONFIG_PACKAGE_quectel-CM-5G is not set" >> .config
+        # Select desired packages
+        echo "CONFIG_PACKAGE_luci-app-qmodem-next=m" >> .config
+        echo "CONFIG_PACKAGE_luci-app-qmodem-monitor=m" >> .config
+        echo "CONFIG_PACKAGE_qmodem_monitor=m" >> .config
+        echo "CONFIG_PACKAGE_sms-forwarder-next=m" >> .config
+        echo "CONFIG_PACKAGE_qmodem=m" >> .config
+        echo "CONFIG_PACKAGE_quectel_CM_5G_M=m" >> .config
+        # Disable optional vendor drivers
         echo "# CONFIG_PACKAGE_quectel_QMI_WWAN is not set" >> .config
         echo "# CONFIG_PACKAGE_fibocom_QMI_WWAN is not set" >> .config
         echo "# CONFIG_PACKAGE_simcom_QMI_WWAN is not set" >> .config
         echo "# CONFIG_PACKAGE_quectel_MHI is not set" >> .config
         echo "# CONFIG_PACKAGE_fibocom_MHI is not set" >> .config
         echo "# CONFIG_PACKAGE_simcom_MHI is not set" >> .config
+        # Disable other CM variants
+        echo "# CONFIG_PACKAGE_quectel-CM-5G is not set" >> .config
+        echo "# CONFIG_PACKAGE_quectel-cm is not set" >> .config
         make defconfig
 
-    - name: Build QModem packages (full feed path)
+    # 7. Build QModem packages (shorthand works because of src-link)
+    - name: Build QModem packages
       run: |
         cd immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64
-        make package/feeds/qmodem/qmodem/compile V=s
-        make package/feeds/qmodem/qmodem_monitor/compile V=s
-        make package/feeds/qmodem/sms-forwarder-next/compile V=s
-        make package/feeds/qmodem/luci-app-qmodem-next/compile V=s
-        make package/feeds/qmodem/luci-app-qmodem-monitor/compile V=s
+        make package/luci-app-qmodem-next/compile V=s
+        make package/luci-app-qmodem-monitor/compile V=s
+        make package/qmodem_monitor/compile V=s
+        make package/sms-forwarder-next/compile V=s
+        make package/qmodem/compile V=s
 
-    - name: Collect IPK files (QModem Next + curl)
+    # 8. Collect IPK files
+    - name: Collect IPK files
       run: |
         mkdir -p ipks
         SDK_DIR=$(ls -d immortalwrt-sdk-* | head -1)
         ARCH="arm_cortex-a9_vfpv3-d16"
         cp "$SDK_DIR/bin/packages/$ARCH/qmodem/"*.ipk ipks/ 2>/dev/null
+        # Also include curl if built as dependency (optional)
         cp "$SDK_DIR/bin/packages/$ARCH/packages/curl_"*.ipk ipks/ 2>/dev/null
         echo "Contents of ipks/:"
         ls -l ipks/
 
+    # 9. Create Release
     - name: Create Release
       uses: softprops/action-gh-release@v2
       with:
