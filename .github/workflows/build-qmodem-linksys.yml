@@ -1,4 +1,4 @@
-name: Build QModem for ImmortalWrt 24.10.4 latest packages(mvebu/cortexa9)
+name: Build QModem for ImmortalWrt 24.10.4 latest packages (mvebu/cortexa9)
 
 on:
   schedule:
@@ -77,42 +77,56 @@ jobs:
         sed -i '/^src-git qmodem /d' feeds.conf.default
         echo "src-git qmodem https://github.com/FUjr/QModem.git;main" >> feeds.conf.default
         ./scripts/feeds update -a
-        ./scripts/feeds install luci-app-qmodem
-        ./scripts/feeds install luci-app-qmodem-sms
-        ./scripts/feeds install qmodem_monitor
+        # Install the full QModem Next ecosystem + the core qmodem package
+        ./scripts/feeds install luci-app-qmodem-next
         ./scripts/feeds install luci-app-qmodem-monitor
+        ./scripts/feeds install qmodem_monitor
+        ./scripts/feeds install sms-forwarder-next
+        ./scripts/feeds install qmodem   # we will build this without optional kmods
 
-    - name: Configure build options (non‑interactive)
+    - name: Configure build options (disable all optional driver packages)
       run: |
         cd immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64
+        # --- Quectel CM variant (required) ---
         echo "CONFIG_PACKAGE_quectel_CM_5G_M=y" >> .config
         echo "# CONFIG_PACKAGE_quectel-CM-5G is not set" >> .config
-        echo "# CONFIG_PACKAGE_quectel_MHI is not set" >> .config
+
+        # --- Disable all vendor‑specific QMI / MHI drivers ---
+        # These trigger the kmod‑qmi_wwan_q/f/s and kmod‑mhi‑wwan dependencies
+        echo "# CONFIG_PACKAGE_quectel_QMI_WWAN is not set" >> .config
         echo "# CONFIG_PACKAGE_fibocom_QMI_WWAN is not set" >> .config
         echo "# CONFIG_PACKAGE_simcom_QMI_WWAN is not set" >> .config
+        echo "# CONFIG_PACKAGE_quectel_MHI is not set" >> .config
+        echo "# CONFIG_PACKAGE_fibocom_MHI is not set" >> .config       # just in case
+        echo "# CONFIG_PACKAGE_simcom_MHI is not set" >> .config
+
+        # --- Disable optional userspace tools that pull in unusual kmods ---
+        # (e.g., coreutils, bc, usbutils are not needed for basic operation)
+        # We keep them disabled to avoid their own kmod deps (none, but safe).
+        # They will not be built unless explicitly required by another package.
+        # --------------------------------------------------------------------
         make defconfig
 
     - name: Build QModem packages
       run: |
         cd immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64
-        make package/luci-app-qmodem/compile V=s
-        make package/luci-app-qmodem-sms/compile V=s
-        make package/qmodem_monitor/compile V=s
+        make package/qmodem/compile V=s
+        make package/luci-app-qmodem-next/compile V=s
         make package/luci-app-qmodem-monitor/compile V=s
+        make package/qmodem_monitor/compile V=s
+        make package/sms-forwarder-next/compile V=s
 
-    - name: Collect IPK files (QModem only)
+    - name: Collect IPK files (QModem Next + curl)
       run: |
         mkdir -p ipks
         SDK_DIR=$(ls -d immortalwrt-sdk-* | head -1)
         ARCH="arm_cortex-a9_vfpv3-d16"
-        PKG_DIR="$SDK_DIR/bin/packages/$ARCH/qmodem"
-        if [ -d "$PKG_DIR" ]; then
-          cp "$PKG_DIR"/*.ipk ipks/
-          echo "Copied QModem packages from $PKG_DIR"
-        else
-          echo "QModem package directory not found. Listing available archs:"
-          ls -d "$SDK_DIR/bin/packages/"*/
-        fi
+        # All QModem feed packages
+        cp "$SDK_DIR/bin/packages/$ARCH/qmodem/"*.ipk ipks/ 2>/dev/null
+        # Copy curl (dependency of sms-forwarder-next)
+        cp "$SDK_DIR/bin/packages/$ARCH/packages/curl_"*.ipk ipks/ 2>/dev/null
+        echo "Contents of ipks/:"
+        ls -l ipks/
 
     - name: Create Release
       uses: softprops/action-gh-release@v2
