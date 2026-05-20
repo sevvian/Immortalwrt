@@ -48,7 +48,7 @@ jobs:
       contents: write
 
     steps:
-    # 1. Checkout the QModem source code
+    # 1. Checkout QModem source
     - name: Checkout QModem source
       uses: actions/checkout@v4
       with:
@@ -56,18 +56,7 @@ jobs:
         path: qmodem-source
         ref: main
 
-    # 2. PATCH the qmodem Makefile to remove ALL kmod dependencies
-    - name: Remove hard kmod dependencies from qmodem
-      run: |
-        cd qmodem-source
-        # Delete every line that contains "kmod-" (covers both +kmod- and conditional :kmod-)
-        sed -i '/kmod-/d' application/qmodem/Makefile
-        # Fix any broken line continuations or trailing spaces
-        sed -i 's/\\$//' application/qmodem/Makefile
-        sed -i 's/[[:space:]]*$//' application/qmodem/Makefile
-      shell: bash
-
-    # 3. Prepare the build environment (tools, SDK, etc.)
+    # 2. Prepare the build environment
     - name: Prepare build environment
       run: |
         sudo apt-get update
@@ -89,7 +78,7 @@ jobs:
         wget -q "$SDK_URL"
         tar --zstd -xf immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64.tar.zst
 
-    # 4. Link the patched QModem source as a local feed
+    # 3. Link QModem source as a local feed (NO patching of Makefiles)
     - name: Add feeds and update (local QModem link)
       run: |
         cd immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64
@@ -99,7 +88,7 @@ jobs:
         ./scripts/feeds update -a
         ./scripts/feeds install -a -p qmodem
 
-    # 5. Configure only the packages we need, disabling all optional vendor drivers
+    # 4. Configure – enable vendor QMI drivers and the matching LuCI choice
     - name: Configure build options
       run: |
         cd immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64
@@ -108,40 +97,62 @@ jobs:
         echo "CONFIG_PACKAGE_quectel_CM_5G_M=m" >> .config
         echo "# CONFIG_PACKAGE_quectel-CM-5G is not set" >> .config
         echo "# CONFIG_PACKAGE_quectel-cm is not set" >> .config
-        echo "# CONFIG_PACKAGE_quectel_QMI_WWAN is not set" >> .config
-        echo "# CONFIG_PACKAGE_fibocom_QMI_WWAN is not set" >> .config
-        echo "# CONFIG_PACKAGE_simcom_QMI_WWAN is not set" >> .config
+
+        # --- Enable the vendor QMI kernel modules (build them) ---
+        echo "CONFIG_PACKAGE_quectel_QMI_WWAN=m" >> .config
+        echo "CONFIG_PACKAGE_fibocom_QMI_WWAN=m" >> .config
+        echo "CONFIG_PACKAGE_simcom_QMI_WWAN=m" >> .config
+
+        # --- Tell LuCI to use the vendor QMI drivers (this creates the dependency) ---
+        echo "CONFIG_PACKAGE_luci-app-qmodem_INCLUDE_vendor-qmi-wwan=y" >> .config
+        echo "# CONFIG_PACKAGE_luci-app-qmodem_INCLUDE_generic-qmi-wwan is not set" >> .config
+
+        # --- Disable MHI (PCIe) drivers to keep things clean ---
         echo "# CONFIG_PACKAGE_quectel_MHI is not set" >> .config
         echo "# CONFIG_PACKAGE_fibocom_MHI is not set" >> .config
         echo "# CONFIG_PACKAGE_simcom_MHI is not set" >> .config
-        # Force generic QMI driver and disable vendor QMI
-        echo "# CONFIG_PACKAGE_luci-app-qmodem_INCLUDE_vendor-qmi-wwan is not set" >> .config
-        echo "CONFIG_PACKAGE_luci-app-qmodem_INCLUDE_generic-qmi-wwan=y" >> .config
+
         make defconfig
 
-    # 6. Build only the top-level LuCI apps – all dependencies (including qmodem) are built automatically
+    # 5. Build everything (the kernel modules will be compiled automatically)
     - name: Build QModem packages
       run: |
         cd immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64
         make package/luci-app-qmodem-next/compile V=s
         make package/luci-app-qmodem-monitor/compile V=s
 
-    # 7. Collect all generated IPK files (they will be in the qmodem feed directory)
-    - name: Collect IPK files (QModem + required user-space deps)
+    # 6. Collect IPKs – QModem feed, user‑space tools, AND all required kernel modules
+    - name: Collect IPK files (QModem + user-space + kmods)
       run: |
         mkdir -p ipks
         SDK_DIR=$(ls -d immortalwrt-sdk-* | head -1)
         ARCH="arm_cortex-a9_vfpv3-d16"
-        # All QModem feed packages
+        # All QModem feed packages (includes the newly built kmod-qmi_wwan_q etc.)
         cp "$SDK_DIR/bin/packages/$ARCH/qmodem/"*.ipk ipks/ 2>/dev/null
-        # Required user-space dependencies (pre-built in SDK)
+
+        # Required user‑space dependencies
         for pkg in curl terminfo bc coreutils coreutils-stat usbutils; do
-          cp "$SDK_DIR/bin/packages/$ARCH/packages/${pkg}_"*.ipk ipks/ 2>/dev/null || echo "Note: $pkg not found in SDK, continuing"
+          cp "$SDK_DIR/bin/packages/$ARCH/packages/${pkg}_"*.ipk ipks/ 2>/dev/null || echo "Note: $pkg not found"
         done
+
+        # Essential kernel modules – the ones unconditionally needed by qmodem
+        # (both from base and packages subdirectories)
+        for kmod in \
+          kmod-usb2 kmod-usb3 kmod-usb-serial kmod-usb-serial-option \
+          kmod-usb-serial-qualcomm kmod-usb-net kmod-usb-acm kmod-usb-wdm \
+          kmod-usb-net-cdc-ether kmod-usb-net-cdc-mbim kmod-usb-net-rndis \
+          kmod-usb-net-cdc-ncm kmod-usb-net-huawei-cdc-ncm \
+          kmod-usb-net-qmi-wwan; do
+          # Look in base first, then packages
+          cp "$SDK_DIR/bin/packages/$ARCH/base/${kmod}_"*.ipk ipks/ 2>/dev/null || \
+          cp "$SDK_DIR/bin/packages/$ARCH/packages/${kmod}_"*.ipk ipks/ 2>/dev/null || \
+          echo "Note: $kmod not found in SDK (may be built-in)"
+        done
+
         echo "Contents of ipks/:"
         ls -l ipks/
 
-    # 8. Publish the release
+    # 7. Publish the release
     - name: Create Release
       uses: softprops/action-gh-release@v2
       with:
