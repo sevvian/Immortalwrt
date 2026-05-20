@@ -56,12 +56,12 @@ jobs:
         path: qmodem-source
         ref: main
 
-    # 2. PATCH the qmodem Makefile to remove all kmod dependencies
+    # 2. PATCH the qmodem Makefile to remove ALL kmod dependencies
     - name: Remove hard kmod dependencies from qmodem
       run: |
         cd qmodem-source
-        # Delete every line containing +kmod- (the problematic kernel-module deps)
-        sed -i '/+kmod-/d' application/qmodem/Makefile
+        # Delete every line that contains "kmod-" (covers both +kmod- and conditional :kmod-)
+        sed -i '/kmod-/d' application/qmodem/Makefile
         # Fix any broken line continuations or trailing spaces
         sed -i 's/\\$//' application/qmodem/Makefile
         sed -i 's/[[:space:]]*$//' application/qmodem/Makefile
@@ -114,6 +114,9 @@ jobs:
         echo "# CONFIG_PACKAGE_quectel_MHI is not set" >> .config
         echo "# CONFIG_PACKAGE_fibocom_MHI is not set" >> .config
         echo "# CONFIG_PACKAGE_simcom_MHI is not set" >> .config
+        # Force generic QMI driver and disable vendor QMI
+        echo "# CONFIG_PACKAGE_luci-app-qmodem_INCLUDE_vendor-qmi-wwan is not set" >> .config
+        echo "CONFIG_PACKAGE_luci-app-qmodem_INCLUDE_generic-qmi-wwan=y" >> .config
         make defconfig
 
     # 6. Build only the top-level LuCI apps – all dependencies (including qmodem) are built automatically
