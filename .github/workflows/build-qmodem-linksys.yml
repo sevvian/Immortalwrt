@@ -1,8 +1,8 @@
 name: Build QModem for ImmortalWrt 24.10.4 latest packages (mvebu/cortexa9)
 
 on:
-  schedule:
-    - cron: '0 6 * * *'
+#  schedule:
+#    - cron: '0 6 * * *'
   workflow_dispatch:
 
 jobs:
