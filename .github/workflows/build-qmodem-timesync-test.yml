@@ -189,6 +189,7 @@ jobs:
         path: ipks/*.ipk
 
   # ---------- 3. Build atc-fib-fm350_gl & luci-proto-atc ----------
+  # ---------- 3. Build atc-fib-fm350_gl & luci-proto-atc ----------
   build-mrhaav:
     needs: check-and-build
     if: needs.check-and-build.outputs.build_needed == 'true'
@@ -225,34 +226,42 @@ jobs:
         wget -q "$SDK_URL"
         tar --zstd -xf immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64.tar.zst
 
-    - name: Set up feeds (mrhaav feeds + essential ImmortalWrt)
+    # ── Create a proper feed directory with subdirectories for each package ──
+    - name: Create proper feed directory structure
+      run: |
+        mkdir -p mrhaavfeed/atc-fib-fm350_gl
+        mkdir -p mrhaavfeed/luci-proto-atc
+        cp -r mrhaav-source/atc-fib-fm350_gl/* mrhaavfeed/atc-fib-fm350_gl/
+        cp -r mrhaav-source/luci/protocols/luci-proto-atc/* mrhaavfeed/luci-proto-atc/
+
+    - name: Set up feeds (mrhaav feed + essential ImmortalWrt)
       run: |
         cd immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64
         rm -rf feeds/base
         rm -f feeds.conf feeds.conf.default
-        printf '%s\n' "src-link atcfibfm350gl ${{ github.workspace }}/mrhaav-source/atc-fib-fm350_gl" >> feeds.conf.default
-        printf '%s\n' "src-link luciprotoatc ${{ github.workspace }}/mrhaav-source/luci/protocols/luci-proto-atc" >> feeds.conf.default
+        # Feed directory contains subdirectories for each package – correct structure
+        printf '%s\n' "src-link mrhaavfeed ${{ github.workspace }}/mrhaavfeed" >> feeds.conf.default
         printf '%s\n' "src-git luci https://github.com/immortalwrt/luci.git;openwrt-24.10" >> feeds.conf.default
         printf '%s\n' "src-git packages https://github.com/immortalwrt/packages.git;openwrt-24.10" >> feeds.conf.default
         ./scripts/feeds update -a
         ./scripts/feeds install -a
 
-    - name: Build packages (use full feed paths)
+    - name: Build packages
       run: |
         cd immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64
         echo "CONFIG_PACKAGE_atc-fib-fm350_gl=m" >> .config
         echo "CONFIG_PACKAGE_luci-proto-atc=m" >> .config
         make defconfig
-        make package/feeds/atcfibfm350gl/atc-fib-fm350_gl/compile V=s
-        make package/feeds/luciprotoatc/luci-proto-atc/compile V=s
+        # Use full feed path (feed name / package name)
+        make package/feeds/mrhaavfeed/atc-fib-fm350_gl/compile V=s
+        make package/feeds/mrhaavfeed/luci-proto-atc/compile V=s
 
     - name: Collect IPKs
       run: |
         mkdir -p ipks
         SDK_DIR=$(ls -d immortalwrt-sdk-* | head -1)
         ARCH="arm_cortex-a9_vfpv3-d16"
-        cp "$SDK_DIR/bin/packages/$ARCH/atcfibfm350gl/"*.ipk ipks/ 2>/dev/null || true
-        cp "$SDK_DIR/bin/packages/$ARCH/luciprotoatc/"*.ipk ipks/ 2>/dev/null || true
+        cp "$SDK_DIR/bin/packages/$ARCH/mrhaavfeed/"*.ipk ipks/ 2>/dev/null || true
         find "$SDK_DIR/bin" -name "atc-fib-fm350_gl_*.ipk" -o -name "luci-proto-atc_*.ipk" | xargs -I{} cp {} ipks/
         ls -l ipks/
 
