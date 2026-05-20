@@ -1,0 +1,167 @@
+name: Build QModem + quectel-timesync for ImmortalWrt 24.10.4 (mvebu/cortexa9)
+
+on:
+#  schedule:
+#    - cron: '0 6 * * *'
+  workflow_dispatch:
+
+jobs:
+  check-and-build:
+    runs-on: ubuntu-latest
+    outputs:
+      build_needed: ${{ steps.check.outputs.build_needed }}
+      upstream_sha: ${{ steps.check.outputs.upstream_sha }}
+
+    steps:
+    - name: Check latest upstream commit
+      id: check
+      run: |
+        UPSTREAM_REPO="FUjr/QModem"
+        API_URL="https://api.github.com/repos/$UPSTREAM_REPO/commits/main"
+        LATEST_SHA=$(curl -s $API_URL | jq -r '.sha')
+        LAST_BUILT_SHA=$(cat .last_built_sha 2>/dev/null || echo "")
+        echo "Latest upstream SHA: $LATEST_SHA"
+        echo "Last built SHA: $LAST_BUILT_SHA"
+        if [ "$LATEST_SHA" != "$LAST_BUILT_SHA" ]; then
+          echo "New commits detected. Triggering build."
+          echo "build_needed=true" >> $GITHUB_OUTPUT
+          echo "upstream_sha=$LATEST_SHA" >> $GITHUB_OUTPUT
+          echo "$LATEST_SHA" > .last_built_sha
+        else
+          echo "No new commits. Skipping build."
+          echo "build_needed=false" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Cache last built SHA
+      uses: actions/cache@v4
+      with:
+        path: .last_built_sha
+        key: qmodem-last-built-sha-24.10.4-${{ github.run_id }}
+        restore-keys: |
+          qmodem-last-built-sha-24.10.4-
+
+  build:
+    needs: check-and-build
+    if: needs.check-and-build.outputs.build_needed == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+    # 1. Checkout QModem source
+    - name: Checkout QModem source
+      uses: actions/checkout@v4
+      with:
+        repository: FUjr/QModem
+        path: qmodem-source
+        ref: main
+
+    # 2. Checkout quectel-timesync source
+    - name: Checkout quectel-timesync source
+      uses: actions/checkout@v4
+      with:
+        repository: freifunk-darmstadt/quectel-timesync
+        path: quectel-timesync-source
+        ref: master
+
+    # 3. Prepare the build environment
+    - name: Prepare build environment
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential clang flex bison g++ gawk \
+        gcc-multilib g++-multilib gettext git libncurses-dev libssl-dev \
+        python3-dev python3-setuptools rsync unzip zlib1g-dev file wget zstd
+
+    - name: Restore SDK cache
+      id: cache-sdk
+      uses: actions/cache@v4
+      with:
+        path: immortalwrt-sdk-*
+        key: sdk-mvebu-cortexa9-24.10.4-v1
+
+    - name: Download & extract SDK (24.10.4)
+      if: steps.cache-sdk.outputs.cache-hit != 'true'
+      run: |
+        SDK_URL="https://downloads.immortalwrt.org/releases/24.10.4/targets/mvebu/cortexa9/immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64.tar.zst"
+        wget -q "$SDK_URL"
+        tar --zstd -xf immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64.tar.zst
+
+    # 4. Add both local feeds
+    - name: Add feeds and update (local QModem + quectel-timesync)
+      run: |
+        cd immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64
+        rm -rf feeds/base
+        sed -i '/^src-[a-z]* qmodem /d' feeds.conf.default
+        sed -i '/^src-[a-z]* quectel-timesync /d' feeds.conf.default
+        echo "src-link qmodem ${{ github.workspace }}/qmodem-source" >> feeds.conf.default
+        echo "src-link quectel-timesync ${{ github.workspace }}/quectel-timesync-source/openwrt/quectel-timesync" >> feeds.conf.default
+        ./scripts/feeds update -a
+        # Install QModem packages
+        ./scripts/feeds install -a -p qmodem
+        # Install quectel-timesync
+        ./scripts/feeds install -a -p quectel-timesync
+
+    # 5. Configure build options
+    - name: Configure build options
+      run: |
+        cd immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64
+        # QModem Next + monitor
+        echo "CONFIG_PACKAGE_luci-app-qmodem-next=m" >> .config
+        echo "CONFIG_PACKAGE_luci-app-qmodem-monitor=m" >> .config
+        echo "CONFIG_PACKAGE_quectel_CM_5G_M=m" >> .config
+        echo "# CONFIG_PACKAGE_quectel-CM-5G is not set" >> .config
+        echo "# CONFIG_PACKAGE_quectel-cm is not set" >> .config
+
+        # Enable the vendor QMI kernel modules
+        echo "CONFIG_PACKAGE_kmod-qmi-wwan-q=m" >> .config
+        echo "CONFIG_PACKAGE_kmod-qmi-wwan-f=m" >> .config
+        echo "CONFIG_PACKAGE_kmod-qmi-wwan-s=m" >> .config
+
+        # Tell LuCI to use the vendor QMI drivers
+        echo "CONFIG_PACKAGE_luci-app-qmodem_INCLUDE_vendor-qmi-wwan=y" >> .config
+        echo "# CONFIG_PACKAGE_luci-app-qmodem_INCLUDE_generic-qmi-wwan is not set" >> .config
+
+        # Disable MHI (PCIe) drivers
+        echo "# CONFIG_PACKAGE_quectel_MHI is not set" >> .config
+        echo "# CONFIG_PACKAGE_fibocom_MHI is not set" >> .config
+        echo "# CONFIG_PACKAGE_simcom_MHI is not set" >> .config
+
+        # quectel-timesync
+        echo "CONFIG_PACKAGE_quectel-timesync=m" >> .config
+
+        make defconfig
+
+    # 6. Build all packages
+    - name: Build packages
+      run: |
+        cd immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64
+        make package/luci-app-qmodem-next/compile V=s
+        make package/luci-app-qmodem-monitor/compile V=s
+        make package/quectel-timesync/compile V=s
+
+    # 7. Collect all IPK files
+    - name: Collect IPK files
+      run: |
+        mkdir -p ipks
+        SDK_DIR=$(ls -d immortalwrt-sdk-* | head -1)
+        ARCH="arm_cortex-a9_vfpv3-d16"
+        # All QModem feed packages (includes kmod-qmi_wwan_q etc.)
+        cp "$SDK_DIR/bin/packages/$ARCH/qmodem/"*.ipk ipks/ 2>/dev/null
+        # quectel-timesync packages
+        cp "$SDK_DIR/bin/packages/$ARCH/quectel-timesync/"*.ipk ipks/ 2>/dev/null
+        # Required user-space dependencies
+        for pkg in curl terminfo bc coreutils coreutils-stat usbutils; do
+          cp "$SDK_DIR/bin/packages/$ARCH/packages/${pkg}_"*.ipk ipks/ 2>/dev/null || echo "Note: $pkg not found"
+        done
+        echo "Contents of ipks/:"
+        ls -l ipks/
+
+    # 8. Publish the release
+    - name: Create Release
+      uses: softprops/action-gh-release@v2
+      with:
+        files: ipks/*
+        tag_name: qmodem-24.10.4-${{ needs.check-and-build.outputs.upstream_sha }}
+        name: "QModem + quectel-timesync for ImmortalWrt 24.10.4 (mvebu/cortexa9) – ${{ needs.check-and-build.outputs.upstream_sha }}"
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
