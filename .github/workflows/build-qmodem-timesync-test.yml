@@ -1,7 +1,16 @@
-name: Build QModem for ImmortalWrt 24.10.4 (Linksys WRT3200acm mvebu/cortexa9) TEST KMOD
+name: Build QModem for ImmortalWrt 24.10.4 (Linksys WRT3200acm mvebu/cortexa9) KMOD test
 
 on:
   workflow_dispatch:
+    inputs:
+      force_rebuild:
+        description: 'Force rebuild even if upstream SHA has not changed'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
 
 jobs:
   # ---------- Job 1: Check QModem upstream changes ----------
@@ -27,16 +36,30 @@ jobs:
         API_URL="https://api.github.com/repos/$UPSTREAM_REPO/commits/main"
         LATEST_SHA=$(curl -s "$API_URL" | jq -r '.sha')
         LAST_BUILT_SHA=$(cat .last_built_sha 2>/dev/null || echo "")
-        echo "Latest upstream SHA: $LATEST_SHA"
-        echo "Last built SHA:      $LAST_BUILT_SHA"
+        FORCE="${{ github.event.inputs.force_rebuild }}"
+
+        echo "Latest upstream SHA : $LATEST_SHA"
+        echo "Last built SHA      : $LAST_BUILT_SHA"
+        echo "Force rebuild       : $FORCE"
+
         if [ "$LATEST_SHA" != "$LAST_BUILT_SHA" ]; then
-          echo "New commits detected. Triggering build."
-          echo "build_needed=true"         >> "$GITHUB_OUTPUT"
-          echo "upstream_sha=$LATEST_SHA"  >> "$GITHUB_OUTPUT"
+          echo "New commits detected — build triggered."
+          echo "build_needed=true"        >> "$GITHUB_OUTPUT"
+          echo "upstream_sha=$LATEST_SHA" >> "$GITHUB_OUTPUT"
           echo "$LATEST_SHA" > .last_built_sha
+
+        elif [ "$FORCE" = "true" ]; then
+          echo "No new commits, but force_rebuild=true — build triggered anyway."
+          echo "build_needed=true"        >> "$GITHUB_OUTPUT"
+          echo "upstream_sha=$LATEST_SHA" >> "$GITHUB_OUTPUT"
+          # Do NOT update .last_built_sha so the next normal run still re-detects
+          # if a real new commit lands; write it anyway so the cache is consistent.
+          echo "$LATEST_SHA" > .last_built_sha
+
         else
-          echo "No new commits. Skipping build."
+          echo "No new commits and force_rebuild=false — skipping build."
           echo "build_needed=false" >> "$GITHUB_OUTPUT"
+          echo "upstream_sha=$LATEST_SHA" >> "$GITHUB_OUTPUT"
         fi
 
   # ---------- Job 2: Build QModem (kmods + all userspace) ----------
@@ -88,8 +111,6 @@ jobs:
         rm -rf feeds/base
         rm -f feeds.conf feeds.conf.default
 
-        # qmodem feed must be first so its packages are discoverable before
-        # luci/packages feeds install their own conflicting packages.
         printf '%s\n' "src-link qmodem   ${{ github.workspace }}/qmodem-source"                     >> feeds.conf.default
         printf '%s\n' "src-git  luci     https://github.com/immortalwrt/luci.git;openwrt-24.10"     >> feeds.conf.default
         printf '%s\n' "src-git  packages https://github.com/immortalwrt/packages.git;openwrt-24.10" >> feeds.conf.default
@@ -108,57 +129,42 @@ jobs:
       run: |
         cd "$SDK_DIR"
 
-        # ── Kernel USB stubs (satisfy defconfig dependency checks) ────────────
+        # ── Kernel USB stubs ──────────────────────────────────────────────────
         echo "CONFIG_PACKAGE_kmod-usb-core=m" >> .config
         echo "CONFIG_PACKAGE_kmod-usb-net=m"  >> .config
         echo "CONFIG_PACKAGE_kmod-usb-wdm=m"  >> .config
         echo "CONFIG_PACKAGE_kmod-mii=m"       >> .config
 
         # ── Vendor kernel modules ─────────────────────────────────────────────
-        # CONFIG key = "kmod-" + the KernelPackage/NAME exactly as written in
-        # the Makefile, preserving underscores (NOT converted to dashes).
-        #   driver/quectel_QMI_WWAN  →  KernelPackage/qmi_wwan_q  →  kmod-qmi_wwan_q
-        #   driver/fibocom_QMI_WWAN  →  KernelPackage/qmi_wwan_f  →  kmod-qmi_wwan_f
-        #   driver/simcom_QMI_WWAN   →  KernelPackage/qmi_wwan_s  →  kmod-qmi_wwan_s
-        #   driver/quectel_MHI       →  KernelPackage/pcie_mhi    →  kmod-pcie_mhi
+        # CONFIG key = "kmod-" + KernelPackage/NAME preserving underscores.
+        #   driver/quectel_QMI_WWAN → KernelPackage/qmi_wwan_q → kmod-qmi_wwan_q
+        #   driver/fibocom_QMI_WWAN → KernelPackage/qmi_wwan_f → kmod-qmi_wwan_f
+        #   driver/simcom_QMI_WWAN  → KernelPackage/qmi_wwan_s → kmod-qmi_wwan_s
+        #   driver/quectel_MHI      → KernelPackage/pcie_mhi   → kmod-pcie_mhi
         echo "CONFIG_PACKAGE_kmod-qmi_wwan_q=m" >> .config
         echo "CONFIG_PACKAGE_kmod-qmi_wwan_f=m" >> .config
         echo "CONFIG_PACKAGE_kmod-qmi_wwan_s=m" >> .config
         echo "CONFIG_PACKAGE_kmod-pcie_mhi=m"   >> .config
 
         # ── QModem core userspace packages ────────────────────────────────────
-        # Select every package that makes up the qmodem feed so that
-        # make package/compile can resolve all cross-feed deps (libjson-c,
-        # libubox, lucihttp, luci-base, etc.) in the correct order.
-        echo "CONFIG_PACKAGE_qmodem=m"            >> .config
-        echo "CONFIG_PACKAGE_qmodem_monitor=m"    >> .config
-        echo "CONFIG_PACKAGE_tom_modem=m"         >> .config
-        echo "CONFIG_PACKAGE_ubus-at-daemon=m"    >> .config
-        echo "CONFIG_PACKAGE_sms-tool_q=m"        >> .config
+        echo "CONFIG_PACKAGE_qmodem=m"             >> .config
+        echo "CONFIG_PACKAGE_qmodem_monitor=m"     >> .config
+        echo "CONFIG_PACKAGE_tom_modem=m"          >> .config
+        echo "CONFIG_PACKAGE_ubus-at-daemon=m"     >> .config
+        echo "CONFIG_PACKAGE_sms-tool_q=m"         >> .config
         echo "CONFIG_PACKAGE_sms-forwarder-next=m" >> .config
-        echo "CONFIG_PACKAGE_quectel-CM-5G-M=m"  >> .config
+        echo "CONFIG_PACKAGE_quectel-CM-5G-M=m"   >> .config
 
-        # ── Feature-flag config symbols (live in luci-app-qmodem namespace) ──
-        # The qmodem base-package DEPENDS uses conditional deps gated on these
-        # symbols. Setting them pulls in the correct optional deps automatically.
-        #   +PACKAGE_luci-app-qmodem_INCLUDE_vendor-qmi-wwan:kmod-qmi_wwan_q/f/s
-        #   +PACKAGE_luci-app-qmodem_VENDOR_MHI_PCIe_DRIVER:kmod-pcie_mhi
-        #   +PACKAGE_luci-app-qmodem_USE_TOM_CUSTOMIZED_QUECTEL_CM:quectel-CM-5G-M
-        echo "CONFIG_PACKAGE_luci-app-qmodem_INCLUDE_vendor-qmi-wwan=y"      >> .config
-        echo "CONFIG_PACKAGE_luci-app-qmodem_VENDOR_MHI_PCIe_DRIVER=y"       >> .config
+        # ── Feature-flag symbols (qmodem DEPENDS conditional gates) ───────────
+        echo "CONFIG_PACKAGE_luci-app-qmodem_INCLUDE_vendor-qmi-wwan=y"       >> .config
+        echo "CONFIG_PACKAGE_luci-app-qmodem_VENDOR_MHI_PCIe_DRIVER=y"        >> .config
         echo "CONFIG_PACKAGE_luci-app-qmodem_USE_TOM_CUSTOMIZED_QUECTEL_CM=y" >> .config
-        echo "CONFIG_PACKAGE_luci-app-qmodem_INCLUDE_ndisc6=y"               >> .config
+        echo "CONFIG_PACKAGE_luci-app-qmodem_INCLUDE_ndisc6=y"                >> .config
 
         # ── LuCI JS-only frontend ─────────────────────────────────────────────
-        # luci-app-qmodem-next  DEPENDS: qmodem, luci-base, sms-forwarder-next
-        # luci-app-qmodem-monitor DEPENDS: qmodem, qmodem_monitor, luci-base,
-        #                                  luci-app-qmodem-next
-        # luci-base DEPENDS: lucihttp  (C lib, compiled from luci feed)
-        # All of these are resolved automatically by make package/compile.
         echo "CONFIG_PACKAGE_luci-app-qmodem-next=m"    >> .config
         echo "CONFIG_PACKAGE_luci-app-qmodem-monitor=m" >> .config
 
-        # Resolve config — auto-selects transitive deps from all feeds
         make defconfig
 
         echo "=== FINAL BUILD CONFIG CHECK ==="
@@ -169,40 +175,26 @@ jobs:
     - name: Build all QModem packages (kmods + userspace)
       run: |
         cd "$SDK_DIR"
-        # ── WHY make package/compile, not individual make package/X/compile ──
-        #
-        # Calling packages individually (the previous approach) fails for any
-        # package that has cross-feed dependencies (libjson-c, lucihttp, etc.)
-        # because those dependency packages aren't staged yet when the target
-        # package compile starts.
-        #
-        # make package/compile reads the full .config, computes a dependency
-        # graph across ALL feeds, and builds every selected package in the
-        # correct topological order:
-        #   libjson-c → quectel-CM-5G-M, tom_modem, ubus-at-daemon
-        #   lucihttp  → luci-base → luci-app-qmodem-next/monitor
-        #
-        # -j$(nproc) parallelises independent packages within the same dep level.
-        # IGNORE_ERRORS=m continues past any single-package failure so we
-        # can still collect and upload whatever did succeed.
+        # make package/compile resolves the full cross-feed dependency graph so
+        # libjson-c is staged before quectel-CM-5G-M, lucihttp/luci-base before
+        # luci-app-qmodem-next/monitor, etc.  This replaces the fragile
+        # individual make package/X/compile calls that broke on cross-feed deps.
         make -j$(nproc) package/compile IGNORE_ERRORS=m V=s 2>&1 | \
-          grep -E "^(make\[|time:|ERROR:|  ERROR)" || true
+          grep -E "^(make\[1\].*Entering|make\[1\].*Leaving|time:|  ERROR|ERROR:)" || true
 
         echo ""
-        echo "=== BUILD COMPLETE — verifying key artefacts ==="
+        echo "=== BUILD COMPLETE — key artefacts ==="
         find bin/ -name "kmod-qmi_wwan_*.ipk" -o -name "kmod-pcie_mhi_*.ipk" | sort
-        find bin/ -name "qmodem_*.ipk" -o -name "tom_modem_*.ipk" | sort
-        find bin/ -name "luci-app-qmodem-*.ipk" | sort
-        find bin/ -name "quectel-CM-5G-M_*.ipk" | sort
+        find bin/ -name "qmodem_*.ipk" -o -name "tom_modem_*.ipk"             | sort
+        find bin/ -name "luci-app-qmodem-*.ipk"                                | sort
+        find bin/ -name "quectel-CM-5G-M_*.ipk"                               | sort
 
     - name: Collect QModem IPKs
       run: |
         mkdir -p ipks
         ARCH="arm_cortex-a9_vfpv3-d16"
 
-        # ── 1. Vendor kmod IPKs ───────────────────────────────────────────────
-        # Kernel module IPKs use underscore-based names matching KernelPackage/NAME.
-        # They land under bin/targets/ in SDK builds; find handles both locations.
+        # 1. Vendor kmod IPKs (underscore names, may land under bin/targets/)
         find "$SDK_DIR/bin" \( \
           -name "kmod-qmi_wwan_q_*.ipk" -o \
           -name "kmod-qmi_wwan_f_*.ipk" -o \
@@ -210,26 +202,21 @@ jobs:
           -name "kmod-pcie_mhi_*.ipk"   \
         \) -exec cp {} ipks/ \;
 
-        # ── 2. All qmodem-feed userspace IPKs ────────────────────────────────
-        # This picks up: qmodem, qmodem_monitor, tom_modem, ubus-at-daemon,
-        # sms-tool_q, sms-forwarder-next, quectel-CM-5G-M,
-        # luci-app-qmodem-next, luci-app-qmodem-monitor
+        # 2. All qmodem-feed userspace IPKs
         find "$SDK_DIR/bin/packages/$ARCH/qmodem/" -name "*.ipk" \
           -exec cp {} ipks/ \; 2>/dev/null || true
 
-        # ── 3. Diagnostic ─────────────────────────────────────────────────────
         echo "=== COLLECTED IPKs ==="
         ls -lh ipks/
-        echo ""
+
         echo "Kmod IPKs:"
         ls ipks/kmod-*.ipk 2>/dev/null || echo "  WARNING: No kmod IPKs!"
-        echo ""
+
         echo "Userspace IPKs:"
         ls ipks/*.ipk 2>/dev/null | grep -v kmod || echo "  WARNING: No userspace IPKs!"
 
-        # Fail the job explicitly if we collected nothing at all
         [ "$(ls ipks/*.ipk 2>/dev/null | wc -l)" -gt 0 ] || \
-          { echo "FATAL: Zero IPKs collected — check build log above"; exit 1; }
+          { echo "FATAL: Zero IPKs collected"; exit 1; }
 
     - name: Upload QModem IPKs
       uses: actions/upload-artifact@v4
@@ -254,7 +241,6 @@ jobs:
       run: |
         echo "=== Files ready to publish ==="
         ls -lh release-ipks/
-        echo ""
         echo "Kmod IPKs:"
         ls release-ipks/kmod-*.ipk 2>/dev/null || echo "WARNING: no kmod IPKs"
         echo "Userspace IPKs:"
