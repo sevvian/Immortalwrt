@@ -90,21 +90,38 @@ jobs:
     - name: Configure and build QModem packages
       run: |
         cd immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64
-        echo "CONFIG_PACKAGE_luci-app-qmodem-next=m" >> .config
-        echo "CONFIG_PACKAGE_luci-app-qmodem-monitor=m" >> .config
-        echo "CONFIG_PACKAGE_quectel_CM_5G_M=m" >> .config
+        
+        # 1. Force-enable core kernel module dependencies
+        echo "CONFIG_PACKAGE_kmod-usb-core=m" >> .config
+        echo "CONFIG_PACKAGE_kmod-usb-net=m" >> .config
+        echo "CONFIG_PACKAGE_kmod-usb-wdm=m" >> .config
+        echo "CONFIG_PACKAGE_kmod-mii=m" >> .config
+        
+        # 2. Enable your custom vendor kmods
         echo "CONFIG_PACKAGE_kmod-qmi-wwan-q=m" >> .config
         echo "CONFIG_PACKAGE_kmod-qmi-wwan-f=m" >> .config
         echo "CONFIG_PACKAGE_kmod-qmi-wwan-s=m" >> .config
+        
+        # 3. Enable userspace components
+        echo "CONFIG_PACKAGE_luci-app-qmodem-next=m" >> .config
+        echo "CONFIG_PACKAGE_luci-app-qmodem-monitor=m" >> .config
+        echo "CONFIG_PACKAGE_quectel_CM_5G_M=m" >> .config
         echo "CONFIG_PACKAGE_luci-app-qmodem_INCLUDE_vendor-qmi-wwan=y" >> .config
+        
+        # 4. Resolve dependencies
         make defconfig
         
-        # Compile kernel modules using feed directory paths
+        # 5. DIAGNOSTIC: Verify if the configurations survived defconfig
+        echo "=== VERIFYING BUILD CONFIGURATION ==="
+        grep -E "CONFIG_PACKAGE_kmod-(qmi-wwan|usb-net|usb-wdm)" .config || true
+        echo "====================================="
+        
+        # 6. Build target kernel modules using their feed directory paths
         make package/feeds/qmodem/quectel_QMI_WWAN/compile V=s
         make package/feeds/qmodem/fibocom_QMI_WWAN/compile V=s
         make package/feeds/qmodem/simcom_QMI_WWAN/compile V=s
         
-        # Compile applications and LuCI interfaces using feed paths
+        # 7. Build user space apps and managers
         make package/feeds/qmodem/quectel_CM_5G_M/compile V=s
         make package/feeds/qmodem/luci-app-qmodem-next/compile V=s
         make package/feeds/qmodem/luci-app-qmodem-monitor/compile V=s
@@ -115,23 +132,28 @@ jobs:
         SDK_DIR=$(ls -d immortalwrt-sdk-* | head -1)
         ARCH="arm_cortex-a9_vfpv3-d16"
         
-        # 1. Collect standard userspace IPKs from qmodem feed
+        # 1. Collect your specific compiled vendor kernel modules (kmods)
+        # This searches the entire build tree but only copies your exact custom drivers
+        find "$SDK_DIR/bin" \( \
+          -name "kmod-qmi-wwan-q_*.ipk" -o \
+          -name "kmod-qmi-wwan-f_*.ipk" -o \
+          -name "kmod-qmi-wwan-s_*.ipk" -o \
+          -name "kmod-pcie_mhi_*.ipk" -o \
+          -name "kmod-fibocom_mhi_*.ipk" -o \
+          -name "kmod-simcom_mhi_*.ipk" \
+        \) -exec cp {} ipks/ \;
+        
+        # 2. Collect standard userspace IPKs from your custom qmodem feed
         cp "$SDK_DIR/bin/packages/$ARCH/qmodem/"*.ipk ipks/ 2>/dev/null || true
         
-        # 2. Collect target-specific kernel modules (kmods)
-        TARGET_PKG_DIR="$SDK_DIR/bin/targets/mvebu/cortexa9/packages"
-        if [ -d "$TARGET_PKG_DIR" ]; then
-          cp "$TARGET_PKG_DIR"/kmod-*.ipk ipks/ 2>/dev/null || true
-        fi
-        
-        # 3. Collect core dependencies
+        # 3. Collect only the selected core dependency packages
         for pkg in curl terminfo bc coreutils coreutils-stat usbutils; do
           cp "$SDK_DIR/bin/packages/$ARCH/packages/${pkg}_"*.ipk ipks/ 2>/dev/null || \
           cp "$SDK_DIR/bin/packages/$ARCH/base/${pkg}_"*.ipk ipks/ 2>/dev/null || \
           echo "Note: $pkg not found"
         done
         
-        echo "Collected IPKs:"
+        echo "=== VERIFYING FINAL IPK LIST ==="
         ls -la ipks/
 
     - name: Upload QModem IPKs
