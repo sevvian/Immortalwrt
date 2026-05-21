@@ -1,4 +1,4 @@
-name: Build QModem + extras for ImmortalWrt 24.10.4 (Linksys WRT3200acm mvebu/cortexa9)
+name: Build QModem + extras for ImmortalWrt 24.10.4 (Linksys WRT3200acm mvebu/cortexa9) STABLE LATEST
 
 on:
   workflow_dispatch:
@@ -189,7 +189,6 @@ jobs:
         path: ipks/*.ipk
 
   # ---------- 3. Build atc-fib-fm350_gl & luci-proto-atc ----------
-  # ---------- 3. Build atc-fib-fm350_gl & luci-proto-atc ----------
   build-mrhaav:
     needs: check-and-build
     if: needs.check-and-build.outputs.build_needed == 'true'
@@ -271,9 +270,93 @@ jobs:
         name: mrhaav-ipks
         path: ipks/*.ipk
 
-  # ---------- 4. Combine and release ----------
+  # ---------- 4. Build Argon Theme + Argon Config ----------
+  build-argon:
+    needs: check-and-build
+    if: needs.check-and-build.outputs.build_needed == 'true'
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout luci-theme-argon source
+      uses: actions/checkout@v4
+      with:
+        repository: jerrykuku/luci-theme-argon
+        path: argon-theme-source
+        ref: master
+
+    - name: Checkout luci-app-argon-config source
+      uses: actions/checkout@v4
+      with:
+        repository: jerrykuku/luci-app-argon-config
+        path: argon-config-source
+        ref: master
+
+    - name: Prepare build environment
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential clang flex bison g++ gawk \
+        gcc-multilib g++-multilib gettext git libncurses-dev libssl-dev \
+        python3-dev python3-setuptools rsync unzip zlib1g-dev file wget zstd
+
+    - name: Restore SDK cache
+      id: cache-sdk
+      uses: actions/cache@v4
+      with:
+        path: immortalwrt-sdk-*
+        key: sdk-mvebu-cortexa9-24.10.4-v1
+
+    - name: Download & extract SDK (24.10.4)
+      if: steps.cache-sdk.outputs.cache-hit != 'true'
+      run: |
+        SDK_URL="https://downloads.immortalwrt.org/releases/24.10.4/targets/mvebu/cortexa9/immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64.tar.zst"
+        wget -q "$SDK_URL"
+        tar --zstd -xf immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64.tar.zst
+
+    # ── Create a proper feed directory with subdirectories for each package ──
+    - name: Create proper feed directory structure
+      run: |
+        mkdir -p argonfeed/luci-theme-argon
+        mkdir -p argonfeed/luci-app-argon-config
+        cp -r argon-theme-source/* argonfeed/luci-theme-argon/
+        cp -r argon-config-source/* argonfeed/luci-app-argon-config/
+
+    - name: Set up feeds (argon feed + essential ImmortalWrt)
+      run: |
+        cd immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64
+        rm -rf feeds/base
+        rm -f feeds.conf feeds.conf.default
+        printf '%s\n' "src-link argonfeed ${{ github.workspace }}/argonfeed" >> feeds.conf.default
+        printf '%s\n' "src-git luci https://github.com/immortalwrt/luci.git;openwrt-24.10" >> feeds.conf.default
+        printf '%s\n' "src-git packages https://github.com/immortalwrt/packages.git;openwrt-24.10" >> feeds.conf.default
+        ./scripts/feeds update -a
+        ./scripts/feeds install -a
+
+    - name: Build packages
+      run: |
+        cd immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64
+        echo "CONFIG_PACKAGE_luci-theme-argon=m" >> .config
+        echo "CONFIG_PACKAGE_luci-app-argon-config=m" >> .config
+        make defconfig
+        make package/feeds/argonfeed/luci-theme-argon/compile V=s
+        make package/feeds/argonfeed/luci-app-argon-config/compile V=s
+
+    - name: Collect IPKs
+      run: |
+        mkdir -p ipks
+        SDK_DIR=$(ls -d immortalwrt-sdk-* | head -1)
+        ARCH="arm_cortex-a9_vfpv3-d16"
+        cp "$SDK_DIR/bin/packages/$ARCH/argonfeed/"*.ipk ipks/ 2>/dev/null || true
+        find "$SDK_DIR/bin" -name "luci-theme-argon_*.ipk" -o -name "luci-app-argon-config_*.ipk" | xargs -I{} cp {} ipks/
+        ls -l ipks/
+
+    - name: Upload IPKs
+      uses: actions/upload-artifact@v4
+      with:
+        name: argon-ipks
+        path: ipks/*.ipk
+
+  # ---------- 5. Combine and release ----------
   release:
-    needs: [build-qmodem, build-quectel-timesync, build-mrhaav]
+    needs: [build-qmodem, build-quectel-timesync, build-mrhaav, build-argon]
     runs-on: ubuntu-latest
     permissions:
       contents: write
