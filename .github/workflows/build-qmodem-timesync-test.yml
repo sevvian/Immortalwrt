@@ -1,4 +1,4 @@
-name: Build QModem + extras for ImmortalWrt 24.10.4 (Linksys WRT3200acm mvebu/cortexa9) v0.1
+name: Build QModem + extras for ImmortalWrt 24.10.4 (Linksys WRT3200acm mvebu/cortexa9) kmod test
 
 on:
   workflow_dispatch:
@@ -89,17 +89,23 @@ jobs:
         echo "CONFIG_PACKAGE_luci-app-qmodem-next=m" >> .config
         echo "CONFIG_PACKAGE_luci-app-qmodem-monitor=m" >> .config
         echo "CONFIG_PACKAGE_quectel_CM_5G_M=m" >> .config
-        echo "# CONFIG_PACKAGE_quectel-CM-5G is not set" >> .config
-        echo "# CONFIG_PACKAGE_quectel-cm is not set" >> .config
         echo "CONFIG_PACKAGE_kmod-qmi-wwan-q=m" >> .config
         echo "CONFIG_PACKAGE_kmod-qmi-wwan-f=m" >> .config
         echo "CONFIG_PACKAGE_kmod-qmi-wwan-s=m" >> .config
-        echo "CONFIG_PACKAGE_luci-app-qmodem_INCLUDE_vendor-qmi-wwan=y" >> .config
-        echo "# CONFIG_PACKAGE_luci-app-qmodem_INCLUDE_generic-qmi-wwan is not set" >> .config
-        echo "# CONFIG_PACKAGE_quectel_MHI is not set" >> .config
-        echo "# CONFIG_PACKAGE_fibocom_MHI is not set" >> .config
-        echo "# CONFIG_PACKAGE_simcom_MHI is not set" >> .config
+        
+        # If you decide to enable the PCIe MHI drivers, uncomment these:
+        # echo "CONFIG_PACKAGE_kmod-pcie_mhi=m" >> .config
+        
         make defconfig
+        
+        # Compile the drivers explicitly
+        make package/qmi_wwan_q/compile V=s
+        make package/qmi_wwan_f/compile V=s
+        make package/qmi_wwan_s/compile V=s
+        # make package/pcie_mhi/compile V=s # Uncomment if building PCIe drivers
+        
+        # Compile the apps and managers
+        make package/quectel_CM_5G_M/compile V=s
         make package/luci-app-qmodem-next/compile V=s
         make package/luci-app-qmodem-monitor/compile V=s
 
@@ -108,13 +114,25 @@ jobs:
         mkdir -p ipks
         SDK_DIR=$(ls -d immortalwrt-sdk-* | head -1)
         ARCH="arm_cortex-a9_vfpv3-d16"
-        cp "$SDK_DIR/bin/packages/$ARCH/qmodem/"*.ipk ipks/ 2>/dev/null
+        
+        # 1. Collect standard userspace IPKs from qmodem feed
+        cp "$SDK_DIR/bin/packages/$ARCH/qmodem/"*.ipk ipks/ 2>/dev/null || true
+        
+        # 2. Collect target-specific kernel modules (kmods)
+        TARGET_PKG_DIR="$SDK_DIR/bin/targets/mvebu/cortexa9/packages"
+        if [ -d "$TARGET_PKG_DIR" ]; then
+          cp "$TARGET_PKG_DIR"/kmod-*.ipk ipks/ 2>/dev/null || true
+        fi
+        
+        # 3. Collect core dependencies
         for pkg in curl terminfo bc coreutils coreutils-stat usbutils; do
           cp "$SDK_DIR/bin/packages/$ARCH/packages/${pkg}_"*.ipk ipks/ 2>/dev/null || \
           cp "$SDK_DIR/bin/packages/$ARCH/base/${pkg}_"*.ipk ipks/ 2>/dev/null || \
           echo "Note: $pkg not found"
         done
-        ls -l ipks/
+        
+        echo "Collected IPKs:"
+        ls -la ipks/
 
     - name: Upload QModem IPKs
       uses: actions/upload-artifact@v4
@@ -122,22 +140,23 @@ jobs:
         name: qmodem-ipks
         path: ipks/*.ipk
 
-  # ---------- 2. Build quectel-timesync ----------
+  # ---------- 2. Build quectel-timesync (sevvian fork, direct copy) ----------
   build-quectel-timesync:
     needs: check-and-build
     if: needs.check-and-build.outputs.build_needed == 'true'
     runs-on: ubuntu-latest
     steps:
-    - name: Checkout quectel-timesync source
+    - name: Checkout quectel-timesync source (sevvian fork)
       uses: actions/checkout@v4
       with:
-        repository: freifunk-darmstadt/quectel-timesync
+        repository: sevvian/quectel-timesync
         path: quectel-source
+        ref: master
 
     - name: Prepare build environment
       run: |
         sudo apt-get update
-        sudo apt-get install -y build-essential clang flex bison g++ gawk \
+        sudo apt-get install -y build-essential flex bison g++ gawk \
         gcc-multilib g++-multilib gettext git libncurses-dev libssl-dev \
         python3-dev python3-setuptools rsync unzip zlib1g-dev file wget zstd
 
@@ -155,31 +174,39 @@ jobs:
         wget -q "$SDK_URL"
         tar --zstd -xf immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64.tar.zst
 
-    - name: Set up feeds (timesync feed + essential ImmortalWrt)
+    - name: Copy packages into SDK
       run: |
-        cd immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64
+        SDK_DIR=$(ls -d immortalwrt-sdk-* | head -1)
+        cp -r quectel-source/openwrt/quectel-timesync "$SDK_DIR/package/quectel-timesync"
+        cp -r quectel-source/luci-app-quectel-timesync "$SDK_DIR/package/luci-app-quectel-timesync"
+
+    - name: Update SDK feeds (needed for dependencies)
+      run: |
+        SDK_DIR=$(ls -d immortalwrt-sdk-* | head -1)
+        cd "$SDK_DIR"
         rm -rf feeds/base
-        rm -f feeds.conf feeds.conf.default
-        printf '%s\n' "src-link quecteltimesync ${{ github.workspace }}/quectel-source/openwrt/quectel-timesync" >> feeds.conf.default
-        printf '%s\n' "src-git luci https://github.com/immortalwrt/luci.git;openwrt-24.10" >> feeds.conf.default
-        printf '%s\n' "src-git packages https://github.com/immortalwrt/packages.git;openwrt-24.10" >> feeds.conf.default
         ./scripts/feeds update -a
         ./scripts/feeds install -a
 
-    - name: Build quectel-timesync
+    - name: Build packages
       run: |
-        cd immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64
+        SDK_DIR=$(ls -d immortalwrt-sdk-* | head -1)
+        cd "$SDK_DIR"
         echo "CONFIG_PACKAGE_quectel-timesync=m" >> .config
+        echo "CONFIG_PACKAGE_luci-app-quectel-timesync=m" >> .config
         make defconfig
         make package/quectel-timesync/compile V=s
+        make package/luci-app-quectel-timesync/compile V=s
 
     - name: Collect IPKs
       run: |
         mkdir -p ipks
         SDK_DIR=$(ls -d immortalwrt-sdk-* | head -1)
         ARCH="arm_cortex-a9_vfpv3-d16"
-        cp "$SDK_DIR/bin/packages/$ARCH/quecteltimesync/"*.ipk ipks/ 2>/dev/null || \
+        cp "$SDK_DIR/bin/packages/$ARCH/base/"quectel-timesync_*.ipk ipks/ 2>/dev/null || true
+        cp "$SDK_DIR/bin/packages/$ARCH/luci/"luci-app-quectel-timesync_*.ipk ipks/ 2>/dev/null || true
         find "$SDK_DIR/bin" -name "quectel-timesync_*.ipk" -exec cp {} ipks/ \;
+        find "$SDK_DIR/bin" -name "luci-app-quectel-timesync_*.ipk" -exec cp {} ipks/ \;
         ls -l ipks/
 
     - name: Upload IPKs
