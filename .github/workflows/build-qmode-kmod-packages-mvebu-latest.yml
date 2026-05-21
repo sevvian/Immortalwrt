@@ -1,4 +1,4 @@
-name: Build QModem + Extras for ImmortalWrt 24.10.4 (mvebu/cortexa9) - TEST VERSIOON COMBINED
+name: Build QModem TEST COMBINED for ImmortalWrt 24.10.4 (mvebu/cortexa9)
 
 on:
   workflow_dispatch:
@@ -13,6 +13,7 @@ on:
           - 'true'
 
 jobs:
+  # ---------- Job: Check upstream ----------
   check-and-build:
     runs-on: ubuntu-latest
     outputs:
@@ -88,7 +89,7 @@ jobs:
         SDK_URL="https://downloads.immortalwrt.org/releases/24.10.4/targets/mvebu/cortexa9/$SDK_TARBALL"
         wget -q "$SDK_URL"
         tar --zstd -xf "$SDK_TARBALL"
-        rm -f "$SDK_TARBALL"
+        rm -f "$SDK_TARBALL"       # remove tarball so ls later only finds the directory
     - name: Set SDK_DIR environment variable
       run: |
         SDK_DIR=$(ls -d immortalwrt-sdk-*)
@@ -210,21 +211,21 @@ jobs:
         SDK_URL="https://downloads.immortalwrt.org/releases/24.10.4/targets/mvebu/cortexa9/immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64.tar.zst"
         wget -q "$SDK_URL"
         tar --zstd -xf immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64.tar.zst
+        rm -f immortalwrt-sdk-*.tar.zst   # ← remove tarball so ls later gives only the directory
+    - name: Set SDK_DIR
+      run: echo "SDK_DIR=$(ls -d immortalwrt-sdk-*)" >> "$GITHUB_ENV"
     - name: Copy packages into SDK
       run: |
-        SDK_DIR=$(ls -d immortalwrt-sdk-*)
         cp -r quectel-source/openwrt/quectel-timesync "$SDK_DIR/package/quectel-timesync"
         cp -r quectel-source/luci-app-quectel-timesync "$SDK_DIR/package/luci-app-quectel-timesync"
     - name: Update SDK feeds (needed for dependencies)
       run: |
-        SDK_DIR=$(ls -d immortalwrt-sdk-*)
         cd "$SDK_DIR"
         rm -rf feeds/base
         ./scripts/feeds update -a
         ./scripts/feeds install -a
     - name: Build packages
       run: |
-        SDK_DIR=$(ls -d immortalwrt-sdk-*)
         cd "$SDK_DIR"
         echo "CONFIG_PACKAGE_quectel-timesync=m" >> .config
         echo "CONFIG_PACKAGE_luci-app-quectel-timesync=m" >> .config
@@ -234,7 +235,6 @@ jobs:
     - name: Collect IPKs
       run: |
         mkdir -p ipks
-        SDK_DIR=$(ls -d immortalwrt-sdk-*)
         ARCH="arm_cortex-a9_vfpv3-d16"
         cp "$SDK_DIR/bin/packages/$ARCH/base/"quectel-timesync_*.ipk ipks/ 2>/dev/null || true
         cp "$SDK_DIR/bin/packages/$ARCH/luci/"luci-app-quectel-timesync_*.ipk ipks/ 2>/dev/null || true
@@ -280,6 +280,9 @@ jobs:
         SDK_URL="https://downloads.immortalwrt.org/releases/24.10.4/targets/mvebu/cortexa9/immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64.tar.zst"
         wget -q "$SDK_URL"
         tar --zstd -xf immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64.tar.zst
+        rm -f immortalwrt-sdk-*.tar.zst
+    - name: Set SDK_DIR
+      run: echo "SDK_DIR=$(ls -d immortalwrt-sdk-*)" >> "$GITHUB_ENV"
     - name: Create proper feed directory structure
       run: |
         mkdir -p mrhaavfeed/atc-fib-fm350_gl
@@ -288,7 +291,6 @@ jobs:
         cp -r mrhaav-source/luci/protocols/luci-proto-atc/* mrhaavfeed/luci-proto-atc/
     - name: Set up feeds (mrhaav feed + essential ImmortalWrt)
       run: |
-        SDK_DIR=$(ls -d immortalwrt-sdk-*)
         cd "$SDK_DIR"
         rm -rf feeds/base
         rm -f feeds.conf feeds.conf.default
@@ -299,7 +301,6 @@ jobs:
         ./scripts/feeds install -a
     - name: Build packages
       run: |
-        SDK_DIR=$(ls -d immortalwrt-sdk-*)
         cd "$SDK_DIR"
         echo "CONFIG_PACKAGE_atc-fib-fm350_gl=m" >> .config
         echo "CONFIG_PACKAGE_luci-proto-atc=m" >> .config
@@ -309,7 +310,6 @@ jobs:
     - name: Collect IPKs
       run: |
         mkdir -p ipks
-        SDK_DIR=$(ls -d immortalwrt-sdk-*)
         ARCH="arm_cortex-a9_vfpv3-d16"
         cp "$SDK_DIR/bin/packages/$ARCH/mrhaavfeed/"*.ipk ipks/ 2>/dev/null || true
         find "$SDK_DIR/bin" -name "atc-fib-fm350_gl_*.ipk" -o -name "luci-proto-atc_*.ipk" | xargs -I{} cp {} ipks/
@@ -356,6 +356,9 @@ jobs:
         SDK_URL="https://downloads.immortalwrt.org/releases/24.10.4/targets/mvebu/cortexa9/immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64.tar.zst"
         wget -q "$SDK_URL"
         tar --zstd -xf immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64.tar.zst
+        rm -f immortalwrt-sdk-*.tar.zst
+    - name: Set SDK_DIR
+      run: echo "SDK_DIR=$(ls -d immortalwrt-sdk-*)" >> "$GITHUB_ENV"
     - name: Create proper feed directory structure
       run: |
         mkdir -p argonfeed/luci-theme-argon
@@ -364,7 +367,6 @@ jobs:
         cp -r argon-config-source/* argonfeed/luci-app-argon-config/
     - name: Set up feeds (argon feed + essential ImmortalWrt)
       run: |
-        SDK_DIR=$(ls -d immortalwrt-sdk-*)
         cd "$SDK_DIR"
         rm -rf feeds/base
         rm -f feeds.conf feeds.conf.default
@@ -375,7 +377,6 @@ jobs:
         ./scripts/feeds install -a
     - name: Build packages
       run: |
-        SDK_DIR=$(ls -d immortalwrt-sdk-*)
         cd "$SDK_DIR"
         echo "CONFIG_PACKAGE_luci-theme-argon=m" >> .config
         echo "CONFIG_PACKAGE_luci-app-argon-config=m" >> .config
@@ -385,7 +386,6 @@ jobs:
     - name: Collect IPKs
       run: |
         mkdir -p ipks
-        SDK_DIR=$(ls -d immortalwrt-sdk-*)
         ARCH="arm_cortex-a9_vfpv3-d16"
         cp "$SDK_DIR/bin/packages/$ARCH/argonfeed/"*.ipk ipks/ 2>/dev/null || true
         find "$SDK_DIR/bin" -name "luci-theme-argon_*.ipk" -o -name "luci-app-argon-config_*.ipk" | xargs -I{} cp {} ipks/
