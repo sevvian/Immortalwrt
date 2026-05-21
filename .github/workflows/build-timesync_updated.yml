@@ -7,29 +7,20 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-    # ------------------------------------------------------------
-    # 1. Checkout YOUR fork (with all improvements)
-    # ------------------------------------------------------------
-    - name: Checkout quectel-timesync fork
+    - name: Checkout your fork
       uses: actions/checkout@v4
       with:
         repository: sevvian/quectel-timesync
         path: quectel-source
         ref: master
 
-    # ------------------------------------------------------------
-    # 2. Install build dependencies
-    # ------------------------------------------------------------
-    - name: Prepare build environment
+    - name: Install build dependencies
       run: |
         sudo apt-get update
         sudo apt-get install -y build-essential flex bison g++ gawk \
         gcc-multilib g++-multilib gettext git libncurses-dev libssl-dev \
         python3-dev python3-setuptools rsync unzip zlib1g-dev file wget zstd
 
-    # ------------------------------------------------------------
-    # 3. Cache the SDK
-    # ------------------------------------------------------------
     - name: Restore SDK cache
       id: cache-sdk
       uses: actions/cache@v4
@@ -37,9 +28,6 @@ jobs:
         path: immortalwrt-sdk-*
         key: sdk-mvebu-cortexa9-24.10.4-v1
 
-    # ------------------------------------------------------------
-    # 4. Download & extract SDK (if not cached)
-    # ------------------------------------------------------------
     - name: Download & extract SDK
       if: steps.cache-sdk.outputs.cache-hit != 'true'
       run: |
@@ -47,40 +35,19 @@ jobs:
         wget -q "$SDK_URL"
         tar --zstd -xf immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64.tar.zst
 
-    # ------------------------------------------------------------
-    # 5. Copy main package (C program) to package/
-    # ------------------------------------------------------------
-    - name: Copy main package into SDK
+    - name: Copy both packages into SDK
       run: |
         SDK_DIR=$(ls -d immortalwrt-sdk-* | head -1)
         cp -r quectel-source/openwrt/quectel-timesync "$SDK_DIR/package/quectel-timesync"
-        echo "Main package copied."
+        cp -r quectel-source/luci-app-quectel-timesync "$SDK_DIR/package/luci-app-quectel-timesync"
 
-    # ------------------------------------------------------------
-    # 6. Update SDK feeds (pulls Luci & other dependencies)
-    # ------------------------------------------------------------
-    - name: Update feeds
+    - name: Update SDK feeds (needed for luci-base dependency)
       run: |
         SDK_DIR=$(ls -d immortalwrt-sdk-* | head -1)
         cd "$SDK_DIR"
         ./scripts/feeds update -a
         ./scripts/feeds install -a
 
-    # ------------------------------------------------------------
-    # 7. Inject LuCI app into the existing Luci feed
-    # ------------------------------------------------------------
-    - name: Install LuCI package into Luci feed
-      run: |
-        SDK_DIR=$(ls -d immortalwrt-sdk-* | head -1)
-        # The Luci feed is at feeds/luci/applications/ after update
-        cp -r quectel-source/luci-app-quectel-timesync "$SDK_DIR/feeds/luci/applications/luci-app-quectel-timesync"
-        cd "$SDK_DIR"
-        # Install the newly placed package
-        ./scripts/feeds install luci-app-quectel-timesync
-
-    # ------------------------------------------------------------
-    # 8. Build both packages
-    # ------------------------------------------------------------
     - name: Build packages
       run: |
         SDK_DIR=$(ls -d immortalwrt-sdk-* | head -1)
@@ -91,9 +58,6 @@ jobs:
         make package/quectel-timesync/compile V=s
         make package/luci-app-quectel-timesync/compile V=s
 
-    # ------------------------------------------------------------
-    # 9. Collect the built IPK files
-    # ------------------------------------------------------------
     - name: Collect IPKs
       run: |
         mkdir -p ipks
@@ -106,18 +70,12 @@ jobs:
         echo "Built IPK files:"
         ls -l ipks/
 
-    # ------------------------------------------------------------
-    # 10. Upload IPKs as workflow artifact
-    # ------------------------------------------------------------
     - name: Upload IPKs
       uses: actions/upload-artifact@v4
       with:
         name: quectel-timesync-ipks
         path: ipks/*.ipk
 
-    # ------------------------------------------------------------
-    # 11. Create a GitHub Release with the IPKs
-    # ------------------------------------------------------------
     - name: Create Release
       uses: softprops/action-gh-release@v2
       with:
