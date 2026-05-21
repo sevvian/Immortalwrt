@@ -1,4 +1,4 @@
-name: Build QModem + extras for ImmortalWrt 24.10.4 (Linksys WRT3200acm mvebu/cortexa9) STABLE LATEST
+name: Build QModem + extras for ImmortalWrt 24.10.4 (Linksys WRT3200acm mvebu/cortexa9) v0.1
 
 on:
   workflow_dispatch:
