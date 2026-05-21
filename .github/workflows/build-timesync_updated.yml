@@ -48,19 +48,18 @@ jobs:
         tar --zstd -xf immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64.tar.zst
 
     # ------------------------------------------------------------
-    # 5. Copy both packages directly into the SDK
+    # 5. Copy main package (C program) to package/
     # ------------------------------------------------------------
-    - name: Copy packages into SDK
+    - name: Copy main package into SDK
       run: |
         SDK_DIR=$(ls -d immortalwrt-sdk-* | head -1)
         cp -r quectel-source/openwrt/quectel-timesync "$SDK_DIR/package/quectel-timesync"
-        cp -r quectel-source/luci-app-quectel-timesync "$SDK_DIR/package/luci-app-quectel-timesync"
-        echo "Packages copied to SDK"
+        echo "Main package copied."
 
     # ------------------------------------------------------------
-    # 6. Update feeds using SDK defaults (no duplicate entries!)
+    # 6. Update SDK feeds (pulls Luci & other dependencies)
     # ------------------------------------------------------------
-    - name: Set up feeds
+    - name: Update feeds
       run: |
         SDK_DIR=$(ls -d immortalwrt-sdk-* | head -1)
         cd "$SDK_DIR"
@@ -68,7 +67,19 @@ jobs:
         ./scripts/feeds install -a
 
     # ------------------------------------------------------------
-    # 7. Build both packages
+    # 7. Inject LuCI app into the existing Luci feed
+    # ------------------------------------------------------------
+    - name: Install LuCI package into Luci feed
+      run: |
+        SDK_DIR=$(ls -d immortalwrt-sdk-* | head -1)
+        # The Luci feed is at feeds/luci/applications/ after update
+        cp -r quectel-source/luci-app-quectel-timesync "$SDK_DIR/feeds/luci/applications/luci-app-quectel-timesync"
+        cd "$SDK_DIR"
+        # Install the newly placed package
+        ./scripts/feeds install luci-app-quectel-timesync
+
+    # ------------------------------------------------------------
+    # 8. Build both packages
     # ------------------------------------------------------------
     - name: Build packages
       run: |
@@ -81,7 +92,7 @@ jobs:
         make package/luci-app-quectel-timesync/compile V=s
 
     # ------------------------------------------------------------
-    # 8. Collect the built IPK files
+    # 9. Collect the built IPK files
     # ------------------------------------------------------------
     - name: Collect IPKs
       run: |
@@ -96,7 +107,7 @@ jobs:
         ls -l ipks/
 
     # ------------------------------------------------------------
-    # 9. Upload IPKs as workflow artifact
+    # 10. Upload IPKs as workflow artifact
     # ------------------------------------------------------------
     - name: Upload IPKs
       uses: actions/upload-artifact@v4
@@ -105,7 +116,7 @@ jobs:
         path: ipks/*.ipk
 
     # ------------------------------------------------------------
-    # 10. Create a GitHub Release with the IPKs
+    # 11. Create a GitHub Release with the IPKs
     # ------------------------------------------------------------
     - name: Create Release
       uses: softprops/action-gh-release@v2
