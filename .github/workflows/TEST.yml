@@ -44,16 +44,12 @@ jobs:
           LAST_BUILT_SHA=$(cat .last_built_sha 2>/dev/null || echo "")
           FORCE="${{ github.event.inputs.force_rebuild }}"
 
-          echo "Latest upstream SHA : $LATEST_SHA"
-          echo "Last built SHA      : $LAST_BUILT_SHA"
-          echo "Force rebuild       : $FORCE"
-
           if [ "$LATEST_SHA" != "$LAST_BUILT_SHA" ] || [ "$FORCE" = "true" ]; then
-            echo "build_needed=true"        >> "$GITHUB_OUTPUT"
+            echo "build_needed=true" >> "$GITHUB_OUTPUT"
             echo "upstream_sha=$LATEST_SHA" >> "$GITHUB_OUTPUT"
             echo "$LATEST_SHA" > .last_built_sha
           else
-            echo "build_needed=false"       >> "$GITHUB_OUTPUT"
+            echo "build_needed=false" >> "$GITHUB_OUTPUT"
             echo "upstream_sha=$LATEST_SHA" >> "$GITHUB_OUTPUT"
           fi
 
@@ -63,7 +59,7 @@ jobs:
     if: needs.check-and-build.outputs.build_needed == 'true'
     runs-on: ubuntu-latest
     steps:
-      # --- Checkout all external sources ---
+      # --- Checkout all sources ---
       - name: Checkout QModem source
         uses: actions/checkout@v4
         with:
@@ -117,7 +113,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.SDK_NAME }}
-          key: sdk-mvebu-cortexa9-24.10.4-v3
+          key: sdk-mvebu-cortexa9-24.10.4-v4
 
       - name: Download & extract SDK
         if: steps.cache-sdk.outputs.cache-hit != 'true'
@@ -126,10 +122,10 @@ jobs:
           tar --zstd -xf "${{ env.SDK_TAR }}"
           rm -f "${{ env.SDK_TAR }}"
 
-      # --- Assemble all packages in the SDK ---
+      # --- Place external packages into the SDK’s package/ directory ---
       - name: Place external packages into SDK
         run: |
-          # quectel-timesync (core program + LuCI app)
+          # quectel-timesync
           cp -r quectel-source/openwrt/quectel-timesync "${{ env.SDK_NAME }}/package/quectel-timesync"
           cp -r quectel-source/luci-app-quectel-timesync "${{ env.SDK_NAME }}/package/luci-app-quectel-timesync"
 
@@ -139,12 +135,12 @@ jobs:
           mkdir -p "${{ env.SDK_NAME }}/package/luci-proto-atc"
           cp -r mrhaav-source/luci/protocols/luci-proto-atc/* "${{ env.SDK_NAME }}/package/luci-proto-atc/"
 
-          # Argon theme and config
+          # Argon
           cp -r luci-theme-argon "${{ env.SDK_NAME }}/package/luci-theme-argon"
           cp -r luci-app-argon-config "${{ env.SDK_NAME }}/package/luci-app-argon-config"
 
-      # --- Configure feeds ---
-      - name: Set up feeds and workaround diskman
+      # --- Configure feeds and work around diskman recursion ---
+      - name: Set up feeds and remove diskman
         run: |
           cd ${{ env.SDK_NAME }}
           rm -rf feeds/base
@@ -156,24 +152,24 @@ jobs:
 
           ./scripts/feeds update -a
 
-          # CRITICAL FIX: Remove diskman to break recursive dependency loop
+          # CRITICAL: remove diskman to break recursive dependency
           rm -rf feeds/luci/applications/luci-app-diskman
 
           ./scripts/feeds install -a
 
-      # --- Configure the build ---
-      - name: Configure minimal build for all targets
+      # --- Write minimal .config with all required symbols ---
+      - name: Configure build
         run: |
           cd ${{ env.SDK_NAME }}
 
-          # Start with a completely minimal, empty config
+          # Start fresh
           cat > .config <<EOF
           CONFIG_ALL=n
           CONFIG_ALL_KMODS=n
           CONFIG_DEVEL=y
           EOF
 
-          # Kernel stubs (required by vendor kmods)
+          # Kernel stubs
           echo "CONFIG_PACKAGE_kmod-usb-core=m" >> .config
           echo "CONFIG_PACKAGE_kmod-usb-net=m"  >> .config
           echo "CONFIG_PACKAGE_kmod-usb-wdm=m"  >> .config
@@ -185,7 +181,7 @@ jobs:
           echo "CONFIG_PACKAGE_kmod-qmi_wwan_s=m" >> .config
           echo "CONFIG_PACKAGE_kmod-pcie_mhi=m"   >> .config
 
-          # QModem userspace core
+          # QModem userspace
           echo "CONFIG_PACKAGE_qmodem=m"             >> .config
           echo "CONFIG_PACKAGE_qmodem_monitor=m"     >> .config
           echo "CONFIG_PACKAGE_tom_modem=m"          >> .config
@@ -194,7 +190,7 @@ jobs:
           echo "CONFIG_PACKAGE_sms-forwarder-next=m" >> .config
           echo "CONFIG_PACKAGE_quectel_CM_5G_M=m"    >> .config
 
-          # Feature flags (required by qmodem's conditional DEPENDS)
+          # Feature flags
           echo "CONFIG_PACKAGE_luci-app-qmodem_INCLUDE_vendor-qmi-wwan=y"       >> .config
           echo "CONFIG_PACKAGE_luci-app-qmodem_VENDOR_MHI_PCIe_DRIVER=y"        >> .config
           echo "CONFIG_PACKAGE_luci-app-qmodem_USE_TOM_CUSTOMIZED_QUECTEL_CM=y" >> .config
@@ -208,7 +204,7 @@ jobs:
           echo "CONFIG_PACKAGE_quectel-timesync=m"       >> .config
           echo "CONFIG_PACKAGE_luci-app-quectel-timesync=m" >> .config
 
-          # mrhaav packages
+          # mrhaav
           echo "CONFIG_PACKAGE_atc-fib-fm350_gl=m"   >> .config
           echo "CONFIG_PACKAGE_luci-proto-atc=m"     >> .config
 
@@ -216,20 +212,52 @@ jobs:
           echo "CONFIG_PACKAGE_luci-theme-argon=m"       >> .config
           echo "CONFIG_PACKAGE_luci-app-argon-config=m"  >> .config
 
-          # Resolve all dependencies and finalize
           make defconfig
 
-          # Verification
-          echo "=== FINAL BUILD CONFIG CHECK ==="
+          # Verify that all packages are enabled
+          echo "=== FINAL CONFIG CHECK ==="
           grep -E "^CONFIG_PACKAGE_(kmod-qmi_wwan|kmod-pcie_mhi|qmodem|tom_modem|ubus-at|sms-|quectel|luci-app-qmodem|luci-theme-argon|luci-app-argon-config|atc-fib|luci-proto-atc)" \
                .config | sort
-          echo "================================="
 
-      # --- Build everything in one pass ---
-      - name: Build all packages
+      # --- Build each package individually (proven working pattern) ---
+      - name: Build QModem kmods
         run: |
           cd ${{ env.SDK_NAME }}
-          make -j$(nproc) package/compile V=s
+          make package/kmod-qmi_wwan_q/compile V=s
+          make package/kmod-qmi_wwan_f/compile V=s
+          make package/kmod-qmi_wwan_s/compile V=s
+          make package/kmod-pcie_mhi/compile V=s
+
+      - name: Build QModem userspace packages
+        run: |
+          cd ${{ env.SDK_NAME }}
+          make package/qmodem/compile V=s
+          make package/qmodem_monitor/compile V=s
+          make package/tom_modem/compile V=s
+          make package/ubus-at-daemon/compile V=s
+          make package/sms-tool_q/compile V=s
+          make package/sms-forwarder-next/compile V=s
+          make package/quectel_CM_5G_M/compile V=s
+          make package/luci-app-qmodem-next/compile V=s
+          make package/luci-app-qmodem-monitor/compile V=s
+
+      - name: Build quectel-timesync
+        run: |
+          cd ${{ env.SDK_NAME }}
+          make package/quectel-timesync/compile V=s
+          make package/luci-app-quectel-timesync/compile V=s
+
+      - name: Build mrhaav packages
+        run: |
+          cd ${{ env.SDK_NAME }}
+          make package/atc-fib-fm350_gl/compile V=s
+          make package/luci-proto-atc/compile V=s
+
+      - name: Build Argon theme and config
+        run: |
+          cd ${{ env.SDK_NAME }}
+          make package/luci-theme-argon/compile V=s
+          make package/luci-app-argon-config/compile V=s
 
       # --- Collect all IPKs ---
       - name: Collect all IPKs
@@ -238,7 +266,7 @@ jobs:
           ARCH="${{ env.ARCH }}"
           SDK_DIR="${{ env.SDK_NAME }}"
 
-          # 1. QModem vendor kmods (underscore names)
+          # Vendor kmods
           find "$SDK_DIR/bin" \( \
             -name "kmod-qmi_wwan_q_*.ipk" -o \
             -name "kmod-qmi_wwan_f_*.ipk" -o \
@@ -246,20 +274,18 @@ jobs:
             -name "kmod-pcie_mhi_*.ipk"   \
           \) -exec cp {} ipks/ \;
 
-          # 2. All packages from the qmodem feed
+          # QModem userspace from qmodem feed
           find "$SDK_DIR/bin/packages/$ARCH/qmodem/" -name "*.ipk" \
             -exec cp {} ipks/ \; 2>/dev/null || true
 
-          # 3. Packages placed in package/ (base feed)
+          # Packages that land in base/
           for pkg in quectel-timesync luci-app-quectel-timesync \
                      atc-fib-fm350_gl luci-proto-atc \
-                     luci-theme-argon luci-app-argon-config; do
+                     luci-theme-argon luci-app-argon-config \
+                     qmodem tom_modem quectel-CM-5G-M \
+                     luci-app-qmodem-next luci-app-qmodem-monitor; do
             find "$SDK_DIR/bin/packages/$ARCH/base/" -name "${pkg}_*.ipk" \
               -exec cp {} ipks/ \; 2>/dev/null || true
-          done
-
-          # 4. Any other matching IPKs in the entire bin tree
-          for pkg in qmodem tom_modem quectel-CM-5G-M luci-app-qmodem-next luci-app-qmodem-monitor; do
             find "$SDK_DIR/bin" -name "${pkg}_*.ipk" \
               -exec cp {} ipks/ \; 2>/dev/null || true
           done
@@ -268,7 +294,6 @@ jobs:
           ls -lh ipks/
           [ "$(ls -A ipks/)" ] || { echo "FATAL: Zero IPKs collected"; exit 1; }
 
-      # --- Upload artifact ---
       - name: Upload all IPKs
         uses: actions/upload-artifact@v4
         with:
