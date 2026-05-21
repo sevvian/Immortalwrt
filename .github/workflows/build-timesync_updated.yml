@@ -3,6 +3,9 @@ name: Build quectel-timesync for ImmortalWrt 24.10.4 (mvebu/cortexa9)
 on:
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
