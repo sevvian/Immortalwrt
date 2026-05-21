@@ -81,6 +81,10 @@ jobs:
         printf '%s\n' "src-git luci https://github.com/immortalwrt/luci.git;openwrt-24.10" >> feeds.conf.default
         printf '%s\n' "src-git packages https://github.com/immortalwrt/packages.git;openwrt-24.10" >> feeds.conf.default
         ./scripts/feeds update -a
+        
+        # WORKAROUND: Delete the conflicting package to break the circular dependency loop
+        rm -rf feeds/luci/applications/luci-app-diskman
+        
         ./scripts/feeds install -a
 
     - name: Configure and build QModem packages
@@ -92,22 +96,18 @@ jobs:
         echo "CONFIG_PACKAGE_kmod-qmi-wwan-q=m" >> .config
         echo "CONFIG_PACKAGE_kmod-qmi-wwan-f=m" >> .config
         echo "CONFIG_PACKAGE_kmod-qmi-wwan-s=m" >> .config
-        
-        # If you decide to enable the PCIe MHI drivers, uncomment these:
-        # echo "CONFIG_PACKAGE_kmod-pcie_mhi=m" >> .config
-        
+        echo "CONFIG_PACKAGE_luci-app-qmodem_INCLUDE_vendor-qmi-wwan=y" >> .config
         make defconfig
         
-        # Compile the drivers explicitly
-        make package/qmi_wwan_q/compile V=s
-        make package/qmi_wwan_f/compile V=s
-        make package/qmi_wwan_s/compile V=s
-        # make package/pcie_mhi/compile V=s # Uncomment if building PCIe drivers
+        # Compile kernel modules using feed directory paths
+        make package/feeds/qmodem/quectel_QMI_WWAN/compile V=s
+        make package/feeds/qmodem/fibocom_QMI_WWAN/compile V=s
+        make package/feeds/qmodem/simcom_QMI_WWAN/compile V=s
         
-        # Compile the apps and managers
-        make package/quectel_CM_5G_M/compile V=s
-        make package/luci-app-qmodem-next/compile V=s
-        make package/luci-app-qmodem-monitor/compile V=s
+        # Compile applications and LuCI interfaces using feed paths
+        make package/feeds/qmodem/quectel_CM_5G_M/compile V=s
+        make package/feeds/qmodem/luci-app-qmodem-next/compile V=s
+        make package/feeds/qmodem/luci-app-qmodem-monitor/compile V=s
 
     - name: Collect QModem + dependency IPKs
       run: |
