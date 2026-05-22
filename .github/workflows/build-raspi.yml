@@ -1,4 +1,4 @@
-name: V3 Combined for raspi4b for ImmortalWrt 24.10.6 (bcm2711/aarch64)
+name: V3 combined for ImmortalWrt 24.10.6 (bcm2711/aarch64)
 
 on:
   workflow_dispatch:
@@ -92,20 +92,18 @@ jobs:
         id: cache-sdk
         uses: actions/cache@v4
         with:
-          path: immortalwrt-sdk-*
-          key: sdk-bcm2711-24.10.6-v1
+          path: ${{ env.SDK_NAME }}
+          key: sdk-bcm2711-24.10.6-v2
 
       - name: Download & extract SDK (24.10.6)
         if: steps.cache-sdk.outputs.cache-hit != 'true'
         run: |
-          SDK_URL="${{ env.SDK_URL }}"
-          wget -q "$SDK_URL"
+          wget -q "${{ env.SDK_URL }}"
           tar --zstd -xf "${{ env.SDK_TAR }}"
 
       - name: Set up feeds (QModem + essential ImmortalWrt feeds)
         run: |
-          SDK_DIR=$(ls -d immortalwrt-sdk-* | head -1)
-          cd "$SDK_DIR"
+          cd "${{ env.SDK_NAME }}"
           rm -rf feeds/base
           rm -f feeds.conf feeds.conf.default
           printf '%s\n' "src-link qmodem ${{ github.workspace }}/qmodem-source" >> feeds.conf.default
@@ -118,8 +116,7 @@ jobs:
 
       - name: Configure and build QModem packages
         run: |
-          SDK_DIR=$(ls -d immortalwrt-sdk-* | head -1)
-          cd "$SDK_DIR"
+          cd "${{ env.SDK_NAME }}"
           echo "CONFIG_PACKAGE_luci-app-qmodem-next=m" >> .config
           echo "CONFIG_PACKAGE_luci-app-qmodem-monitor=m" >> .config
           echo "CONFIG_PACKAGE_quectel_CM_5G_M=m" >> .config
@@ -133,35 +130,26 @@ jobs:
           echo "# CONFIG_PACKAGE_quectel_MHI is not set" >> .config
           echo "# CONFIG_PACKAGE_fibocom_MHI is not set" >> .config
           echo "# CONFIG_PACKAGE_simcom_MHI is not set" >> .config
-          
-          # Force compile critical dependency for luci-base (lua.h)
-          echo "CONFIG_PACKAGE_liblua=y" >> .config
-          
           make defconfig
-          
-          # Compile dependencies first to resolve missing header checks in lucihttp
-          make package/lua/compile V=s -j$(nproc) || make package/lua/compile V=s
-          
           make package/luci-app-qmodem-next/compile V=s
           make package/luci-app-qmodem-monitor/compile V=s
 
       - name: Collect QModem + dependency IPKs
         run: |
           mkdir -p ipks-qmodem
-          SDK_DIR=$(ls -d immortalwrt-sdk-* | head -1)
           ARCH="${{ env.ARCH }}"
           
           # Copy userspace packages from feed directory
-          cp "$SDK_DIR/bin/packages/$ARCH/qmodem/"*.ipk ipks-qmodem/ 2>/dev/null || true
+          cp "${{ env.SDK_NAME }}/bin/packages/$ARCH/qmodem/"*.ipk ipks-qmodem/ 2>/dev/null || true
           
           # Recursively find any driver kmod packages and copy them
-          find "$SDK_DIR/bin" -name "kmod-qmi*.ipk" -exec cp {} ipks-qmodem/ \; 2>/dev/null || true
-          find "$SDK_DIR/bin" -name "kmod-pcie*.ipk" -exec cp {} ipks-qmodem/ \; 2>/dev/null || true
+          find "${{ env.SDK_NAME }}/bin" -name "kmod-qmi*.ipk" -exec cp {} ipks-qmodem/ \; 2>/dev/null || true
+          find "${{ env.SDK_NAME }}/bin" -name "kmod-pcie*.ipk" -exec cp {} ipks-qmodem/ \; 2>/dev/null || true
           
           # Copy dependencies as defined in reference actions
           for pkg in curl terminfo bc coreutils coreutils-stat usbutils; do
-            cp "$SDK_DIR/bin/packages/$ARCH/packages/${pkg}_"*.ipk ipks-qmodem/ 2>/dev/null || \
-            cp "$SDK_DIR/bin/packages/$ARCH/base/${pkg}_"*.ipk ipks-qmodem/ 2>/dev/null || \
+            cp "${{ env.SDK_NAME }}/bin/packages/$ARCH/packages/${pkg}_"*.ipk ipks-qmodem/ 2>/dev/null || \
+            cp "${{ env.SDK_NAME }}/bin/packages/$ARCH/base/${pkg}_"*.ipk ipks-qmodem/ 2>/dev/null || \
             echo "Note: $pkg not found"
           done
           
@@ -201,14 +189,13 @@ jobs:
         id: cache-sdk
         uses: actions/cache@v4
         with:
-          path: immortalwrt-sdk-*
-          key: sdk-bcm2711-24.10.6-v1
+          path: ${{ env.SDK_NAME }}
+          key: sdk-bcm2711-24.10.6-v2
 
       - name: Download & extract SDK (24.10.6)
         if: steps.cache-sdk.outputs.cache-hit != 'true'
         run: |
-          SDK_URL="${{ env.SDK_URL }}"
-          wget -q "$SDK_URL"
+          wget -q "${{ env.SDK_URL }}"
           tar --zstd -xf "${{ env.SDK_TAR }}"
 
       # Copy packages directly into SDK package/ tree (no custom feed needed).
@@ -216,18 +203,16 @@ jobs:
       # this is what allows ./scripts/feeds update -a to resolve luci etc.
       - name: Copy packages into SDK and set up feeds
         run: |
-          SDK_DIR=$(ls -d immortalwrt-sdk-* | head -1)
-          cp -r quectel-source/openwrt/quectel-timesync "$SDK_DIR/package/quectel-timesync"
-          cp -r quectel-source/luci-app-quectel-timesync "$SDK_DIR/package/luci-app-quectel-timesync"
-          cd "$SDK_DIR"
+          cp -r quectel-source/openwrt/quectel-timesync "${{ env.SDK_NAME }}/package/quectel-timesync"
+          cp -r quectel-source/luci-app-quectel-timesync "${{ env.SDK_NAME }}/package/luci-app-quectel-timesync"
+          cd "${{ env.SDK_NAME }}"
           rm -rf feeds/base
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
       - name: Build timesync packages
         run: |
-          SDK_DIR=$(ls -d immortalwrt-sdk-* | head -1)
-          cd "$SDK_DIR"
+          cd "${{ env.SDK_NAME }}"
           echo 'CONFIG_PACKAGE_quectel-timesync=m'          >> .config
           echo 'CONFIG_PACKAGE_luci-app-quectel-timesync=m' >> .config
           make defconfig
@@ -237,10 +222,9 @@ jobs:
       - name: Collect timesync IPKs
         run: |
           mkdir -p ipks-timesync
-          SDK_DIR=$(ls -d immortalwrt-sdk-* | head -1)
           ARCH="${{ env.ARCH }}"
-          find "$SDK_DIR/bin" -name "quectel-timesync_*.ipk" -exec cp {} ipks-timesync/ \; 2>/dev/null || true
-          find "$SDK_DIR/bin" -name "luci-app-quectel-timesync_*.ipk" -exec cp {} ipks-timesync/ \; 2>/dev/null || true
+          find "${{ env.SDK_NAME }}/bin" -name "quectel-timesync_*.ipk" -exec cp {} ipks-timesync/ \; 2>/dev/null || true
+          find "${{ env.SDK_NAME }}/bin" -name "luci-app-quectel-timesync_*.ipk" -exec cp {} ipks-timesync/ \; 2>/dev/null || true
           echo "=== Collected timesync IPKs ==="
           ls -lh ipks-timesync/
           [ "$(ls ipks-timesync/*.ipk 2>/dev/null | wc -l)" -gt 0 ] || \
@@ -281,14 +265,13 @@ jobs:
         id: cache-sdk
         uses: actions/cache@v4
         with:
-          path: immortalwrt-sdk-*
-          key: sdk-bcm2711-24.10.6-v1
+          path: ${{ env.SDK_NAME }}
+          key: sdk-bcm2711-24.10.6-v2
 
       - name: Download & extract SDK (24.10.6)
         if: steps.cache-sdk.outputs.cache-hit != 'true'
         run: |
-          SDK_URL="${{ env.SDK_URL }}"
-          wget -q "$SDK_URL"
+          wget -q "${{ env.SDK_URL }}"
           tar --zstd -xf "${{ env.SDK_TAR }}"
 
       # Build a proper feed directory (one sub-dir per package) then src-link it.
@@ -301,8 +284,7 @@ jobs:
 
       - name: Set up feeds (mrhaav feed + essential ImmortalWrt)
         run: |
-          SDK_DIR=$(ls -d immortalwrt-sdk-* | head -1)
-          cd "$SDK_DIR"
+          cd "${{ env.SDK_NAME }}"
           rm -rf feeds/base
           rm -f feeds.conf feeds.conf.default
           printf '%s\n' "src-link mrhaavfeed ${{ github.workspace }}/mrhaavfeed"               >> feeds.conf.default
@@ -313,8 +295,7 @@ jobs:
 
       - name: Build mrhaav packages
         run: |
-          SDK_DIR=$(ls -d immortalwrt-sdk-* | head -1)
-          cd "$SDK_DIR"
+          cd "${{ env.SDK_NAME }}"
           echo 'CONFIG_PACKAGE_atc-fib-fm350_gl=m' >> .config
           echo 'CONFIG_PACKAGE_luci-proto-atc=m'   >> .config
           make defconfig
@@ -324,10 +305,9 @@ jobs:
       - name: Collect mrhaav IPKs
         run: |
           mkdir -p ipks-mrhaav
-          SDK_DIR=$(ls -d immortalwrt-sdk-* | head -1)
           ARCH="${{ env.ARCH }}"
-          cp "$SDK_DIR/bin/packages/$ARCH/mrhaavfeed/"*.ipk ipks-mrhaav/ 2>/dev/null || true
-          find "$SDK_DIR/bin" -name "atc-fib-fm350_gl_*.ipk" -o -name "luci-proto-atc_*.ipk" | xargs -I{} cp {} ipks-mrhaav/ 2>/dev/null || true
+          cp "${{ env.SDK_NAME }}/bin/packages/$ARCH/mrhaavfeed/"*.ipk ipks-mrhaav/ 2>/dev/null || true
+          find "${{ env.SDK_NAME }}/bin" -name "atc-fib-fm350_gl_*.ipk" -o -name "luci-proto-atc_*.ipk" | xargs -I{} cp {} ipks-mrhaav/ 2>/dev/null || true
           echo "=== Collected mrhaav IPKs ==="
           ls -lh ipks-mrhaav/
           [ "$(ls ipks-mrhaav/*.ipk 2>/dev/null | wc -l)" -gt 0 ] || \
@@ -372,14 +352,13 @@ jobs:
         id: cache-sdk
         uses: actions/cache@v4
         with:
-          path: immortalwrt-sdk-*
-          key: sdk-bcm2711-24.10.6-v1
+          path: ${{ env.SDK_NAME }}
+          key: sdk-bcm2711-24.10.6-v2
 
       - name: Download & extract SDK (24.10.6)
         if: steps.cache-sdk.outputs.cache-hit != 'true'
         run: |
-          SDK_URL="${{ env.SDK_URL }}"
-          wget -q "$SDK_URL"
+          wget -q "${{ env.SDK_URL }}"
           tar --zstd -xf "${{ env.SDK_TAR }}"
 
       - name: Create proper feed directory structure
@@ -391,8 +370,7 @@ jobs:
 
       - name: Set up feeds (argon feed + essential ImmortalWrt)
         run: |
-          SDK_DIR=$(ls -d immortalwrt-sdk-* | head -1)
-          cd "$SDK_DIR"
+          cd "${{ env.SDK_NAME }}"
           rm -rf feeds/base
           rm -f feeds.conf feeds.conf.default
           printf '%s\n' "src-link argonfeed ${{ github.workspace }}/argonfeed"                       >> feeds.conf.default
@@ -405,31 +383,19 @@ jobs:
 
       - name: Build packages
         run: |
-          SDK_DIR=$(ls -d immortalwrt-sdk-* | head -1)
-          cd "$SDK_DIR"
+          cd "${{ env.SDK_NAME }}"
           echo "CONFIG_PACKAGE_luci-theme-argon=m" >> .config
           echo "CONFIG_PACKAGE_luci-app-argon-config=m" >> .config
-          
-          # Force compile critical dependency for wget-ssl
-          echo "CONFIG_PACKAGE_libopenssl=y" >> .config
-          echo "CONFIG_PACKAGE_wget-ssl=y" >> .config
-          
           make defconfig
-          
-          # Compile openssl and wget first to resolve missing header checks in wget-ssl
-          make package/openssl/compile V=s -j$(nproc) || make package/openssl/compile V=s
-          make package/wget/compile V=s -j$(nproc) || make package/wget/compile V=s
-          
           make package/feeds/argonfeed/luci-theme-argon/compile V=s
           make package/feeds/argonfeed/luci-app-argon-config/compile V=s
 
       - name: Collect Argon IPKs
         run: |
           mkdir -p ipks-argon
-          SDK_DIR=$(ls -d immortalwrt-sdk-* | head -1)
           ARCH="${{ env.ARCH }}"
-          cp "$SDK_DIR/bin/packages/$ARCH/argonfeed/"*.ipk ipks-argon/ 2>/dev/null || true
-          find "$SDK_DIR/bin" -name "luci-theme-argon_*.ipk" -o -name "luci-app-argon-config_*.ipk" | xargs -I{} cp {} ipks-argon/ 2>/dev/null || true
+          cp "${{ env.SDK_NAME }}/bin/packages/$ARCH/argonfeed/"*.ipk ipks-argon/ 2>/dev/null || true
+          find "${{ env.SDK_NAME }}/bin" -name "luci-theme-argon_*.ipk" -o -name "luci-app-argon-config_*.ipk" | xargs -I{} cp {} ipks-argon/ 2>/dev/null || true
           
           echo "=== Collected Argon IPKs ==="
           ls -lh ipks-argon/
