@@ -1,4 +1,4 @@
-```
+```yaml
 # CI/CD
 .github/
 
@@ -9,19 +9,23 @@
 # Environment
 .env
 .env.local
-.env.*
+*.env.*
 
 # Dependencies
 node_modules/
-.venv/
 venv/
+.venv/
 __pycache__/
-.mypy_cache/
-.pytest_cache/
+*.egg-info/
 dist/
 build/
 target/
 .gradle/
+.mypy_cache/
+.pytest_cache/
+coverage/
+htmlcov/
+.coverage
 
 # Editors
 .vscode/
@@ -29,11 +33,11 @@ target/
 *.swp
 *.swo
 
-# System
+# OS
 .DS_Store
 Thumbs.db
 
-# Compiled files
+# Compiled/Binary
 *.pyc
 *.class
 *.o
@@ -44,12 +48,7 @@ Thumbs.db
 *.obj
 *.out
 
-# Coverage
-coverage/
-htmlcov/
-.coverage
-
-# Compressed files
+# Archives
 *.zip
 *.gz
 *.tar

@@ -181,13 +181,6 @@ jobs:
           echo "=== qmodem feed symlinks ==="
           ls package/feeds/qmodem/ | sort
 
-      # ── Pre-build libcap (required by coreutils before qmodem build) ───────
-      - name: Build libcap library first
-        run: |
-          cd "${{ env.SDK_NAME }}"
-          # Build libcap from packages feed first so it's staged for coreutils
-          make package/feeds/packages/libcap/compile V=s
-
       # ── .config ───────────────────────────────────────────────────────────
       # Use only echo statements — no heredoc — to avoid column-0 content
       # breaking the YAML literal block scalar and corrupting the on: trigger.
@@ -200,6 +193,7 @@ jobs:
           echo 'CONFIG_DEVEL=y'     >> .config
 
           # Enable libcap in SDK (required by coreutils and other packages)
+          # This ensures libcap is built as a dependency when needed
           echo 'CONFIG_PACKAGE_libcap=y' >> .config
           echo 'CONFIG_LIBCAP_STATIC=n' >> .config
 
@@ -255,55 +249,21 @@ jobs:
                .config | sort
 
       # ── Build steps ───────────────────────────────────────────────────────
-      # IMPORTANT: compile paths use the SOURCE DIRECTORY NAME inside the feed,
-      # NOT the KernelPackage name or PKG_NAME.
+      # IMPORTANT: We use a SINGLE `make package/compile` command to build ALL
+      # selected packages. This lets OpenWrt's build system resolve the complete
+      # dependency graph in the correct order (e.g., libcap → coreutils → others).
+      # Building packages individually causes dependency failures like the libcap error.
       #
-      # QModem repo layout → feed symlink name:
-      #   driver/quectel_QMI_WWAN → package/feeds/qmodem/quectel_QMI_WWAN
-      #   driver/fibocom_QMI_WWAN → package/feeds/qmodem/fibocom_QMI_WWAN
-      #   driver/simcom_QMI_WWAN  → package/feeds/qmodem/simcom_QMI_WWAN
-      #   driver/quectel_MHI      → package/feeds/qmodem/quectel_MHI
-      #   application/qmodem      → package/feeds/qmodem/qmodem
-      #   application/ubus_at_daemon → package/feeds/qmodem/ubus_at_daemon
-      #   application/sms_forwarder_next → package/feeds/qmodem/sms_forwarder_next
-      #   application/quectel_CM_5G_M → package/feeds/qmodem/quectel_CM_5G_M
-      #   luci/luci-app-qmodem-next → package/feeds/qmodem/luci-app-qmodem-next
+      # This approach mirrors the working build-qmodem-timesync-test.yml workflow.
 
-      - name: Build vendor kmods
+      - name: Build all selected packages (single command resolves all deps)
         run: |
           cd "${{ env.SDK_NAME }}"
-          make package/feeds/qmodem/quectel_QMI_WWAN/compile V=s
-          make package/feeds/qmodem/fibocom_QMI_WWAN/compile V=s
-          make package/feeds/qmodem/simcom_QMI_WWAN/compile  V=s
-          make package/feeds/qmodem/quectel_MHI/compile      V=s
-
-      - name: Build all QModem packages together (resolves deps automatically)
-        run: |
-          cd "${{ env.SDK_NAME }}"
-          # Build all qmodem feed packages together - this lets OpenWrt resolve
-          # the full dependency graph including libcap -> coreutils -> qmodem deps
-          # This mirrors the working build-qmodem-timesync-test.yml approach
-          make -j$(nproc) package/feeds/qmodem/compile IGNORE_ERRORS=m V=s 2>&1 | \
-            grep -E "^(make\[1\].*Entering|make\[1\].*Leaving|time:|  ERROR|ERROR:)" || true
-
-      - name: Build quectel-timesync
-        run: |
-          cd "${{ env.SDK_NAME }}"
-          # These live directly in package/ so no feeds/ prefix
-          make package/quectel-timesync/compile          V=s
-          make package/luci-app-quectel-timesync/compile V=s
-
-      - name: Build mrhaav packages
-        run: |
-          cd "${{ env.SDK_NAME }}"
-          make package/feeds/mrhaavfeed/atc-fib-fm350_gl/compile V=s
-          make package/feeds/mrhaavfeed/luci-proto-atc/compile   V=s
-
-      - name: Build Argon theme and config
-        run: |
-          cd "${{ env.SDK_NAME }}"
-          make package/feeds/argonfeed/luci-theme-argon/compile      V=s
-          make package/feeds/argonfeed/luci-app-argon-config/compile V=s
+          # Build EVERYTHING selected in .config in one command
+          # OpenWrt will automatically build dependencies in correct order:
+          # libcap first, then coreutils, then qmodem/kmods/etc.
+          make -j$(nproc) package/compile IGNORE_ERRORS=m V=s 2>&1 | \
+            grep -E "^(make[1].*Entering|make[1].*Leaving|time:|  ERROR|ERROR:)" || true
 
       # ── Collect all IPKs ──────────────────────────────────────────────────
       - name: Collect all IPKs
