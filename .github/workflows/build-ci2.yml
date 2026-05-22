@@ -93,7 +93,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: immortalwrt-sdk-*
-          key: sdk-mvebu-cortexa9-24.10.4-v1-qmodem
+          key: sdk-mvebu-cortexa9-24.10.4-v1
 
       - name: Download & extract SDK (24.10.4)
         if: steps.cache-sdk.outputs.cache-hit != 'true'
@@ -180,7 +180,7 @@ jobs:
           path: quectel-source
           ref: master
 
-      - name: Install build dependencies
+      - name: Prepare build environment
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -194,49 +194,45 @@ jobs:
         uses: actions/cache@v4
         with:
           path: immortalwrt-sdk-*
-          key: sdk-mvebu-cortexa9-24.10.4-v1-timesync
+          key: sdk-mvebu-cortexa9-24.10.4-v1
 
-      - name: Download & extract SDK
+      - name: Download & extract SDK (24.10.4)
         if: steps.cache-sdk.outputs.cache-hit != 'true'
         run: |
-          wget -q "${{ env.SDK_URL }}"
-          tar --zstd -xf "${{ env.SDK_TAR }}"
-          rm -f "${{ env.SDK_TAR }}"
+          SDK_URL="https://downloads.immortalwrt.org/releases/24.10.4/targets/mvebu/cortexa9/immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64.tar.zst"
+          wget -q "$SDK_URL"
+          tar --zstd -xf immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64.tar.zst
 
       # Copy packages directly into SDK package/ tree (no custom feed needed).
       # Only remove feeds/base so the SDK's own feeds.conf.default is preserved —
       # this is what allows ./scripts/feeds update -a to resolve luci etc.
       - name: Copy packages into SDK and set up feeds
         run: |
-          cp -r quectel-source/openwrt/quectel-timesync \
-            "immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64/package/quectel-timesync"
-          cp -r quectel-source/luci-app-quectel-timesync \
-            "immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64/package/luci-app-quectel-timesync"
-          cd "immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64"
+          SDK_DIR=$(ls -d immortalwrt-sdk-* | head -1)
+          cp -r quectel-source/openwrt/quectel-timesync "$SDK_DIR/package/quectel-timesync"
+          cp -r quectel-source/luci-app-quectel-timesync "$SDK_DIR/package/luci-app-quectel-timesync"
+          cd "$SDK_DIR"
           rm -rf feeds/base
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
       - name: Build timesync packages
         run: |
-          cd "immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64"
+          SDK_DIR=$(ls -d immortalwrt-sdk-* | head -1)
+          cd "$SDK_DIR"
           echo 'CONFIG_PACKAGE_quectel-timesync=m'          >> .config
           echo 'CONFIG_PACKAGE_luci-app-quectel-timesync=m' >> .config
           make defconfig
-          make package/quectel-timesync/compile V=s -j$(nproc) || make package/quectel-timesync/compile V=s
-          make package/luci-app-quectel-timesync/compile V=s -j$(nproc) || make package/luci-app-quectel-timesync/compile V=s
+          make package/quectel-timesync/compile V=s
+          make package/luci-app-quectel-timesync/compile V=s
 
       - name: Collect timesync IPKs
         run: |
           mkdir -p ipks-timesync
-          find "immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64/bin" -name "*.ipk" | while read -r ipk; do
-            filename=$(basename "$ipk")
-            if [[ "$filename" =~ ^quectel-timesync_ ]] || \
-               [[ "$filename" =~ ^luci-app-quectel-timesync_ ]]; then
-              echo "Copying timesync IPK: $filename"
-              cp "$ipk" ipks-timesync/
-            fi
-          done
+          SDK_DIR=$(ls -d immortalwrt-sdk-* | head -1)
+          ARCH="arm_cortex-a9_vfpv3-d16"
+          find "$SDK_DIR/bin" -name "quectel-timesync_*.ipk" -exec cp {} ipks-timesync/ \; 2>/dev/null || true
+          find "$SDK_DIR/bin" -name "luci-app-quectel-timesync_*.ipk" -exec cp {} ipks-timesync/ \; 2>/dev/null || true
           echo "=== Collected timesync IPKs ==="
           ls -lh ipks-timesync/
           [ "$(ls ipks-timesync/*.ipk 2>/dev/null | wc -l)" -gt 0 ] || \
@@ -264,7 +260,7 @@ jobs:
             atc-fib-fm350_gl
             luci/protocols/luci-proto-atc
 
-      - name: Install build dependencies
+      - name: Prepare build environment
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -278,24 +274,27 @@ jobs:
         uses: actions/cache@v4
         with:
           path: immortalwrt-sdk-*
-          key: sdk-mvebu-cortexa9-24.10.4-v1-mrhaav
+          key: sdk-mvebu-cortexa9-24.10.4-v1
 
-      - name: Download & extract SDK
+      - name: Download & extract SDK (24.10.4)
         if: steps.cache-sdk.outputs.cache-hit != 'true'
         run: |
-          wget -q "${{ env.SDK_URL }}"
-          tar --zstd -xf "${{ env.SDK_TAR }}"
-          rm -f "${{ env.SDK_TAR }}"
+          SDK_URL="https://downloads.immortalwrt.org/releases/24.10.4/targets/mvebu/cortexa9/immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64.tar.zst"
+          wget -q "$SDK_URL"
+          tar --zstd -xf immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64.tar.zst
 
       # Build a proper feed directory (one sub-dir per package) then src-link it.
-      - name: Create feed directory and set up feeds
+      - name: Create proper feed directory structure
         run: |
           mkdir -p mrhaavfeed/atc-fib-fm350_gl
           mkdir -p mrhaavfeed/luci-proto-atc
           cp -r mrhaav-source/atc-fib-fm350_gl/*              mrhaavfeed/atc-fib-fm350_gl/
           cp -r mrhaav-source/luci/protocols/luci-proto-atc/* mrhaavfeed/luci-proto-atc/
 
-          cd "immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64"
+      - name: Set up feeds (mrhaav feed + essential ImmortalWrt)
+        run: |
+          SDK_DIR=$(ls -d immortalwrt-sdk-* | head -1)
+          cd "$SDK_DIR"
           rm -rf feeds/base
           rm -f feeds.conf feeds.conf.default
           printf '%s\n' "src-link mrhaavfeed ${{ github.workspace }}/mrhaavfeed"               >> feeds.conf.default
@@ -306,24 +305,21 @@ jobs:
 
       - name: Build mrhaav packages
         run: |
-          cd "immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64"
+          SDK_DIR=$(ls -d immortalwrt-sdk-* | head -1)
+          cd "$SDK_DIR"
           echo 'CONFIG_PACKAGE_atc-fib-fm350_gl=m' >> .config
           echo 'CONFIG_PACKAGE_luci-proto-atc=m'   >> .config
           make defconfig
-          make package/feeds/mrhaavfeed/atc-fib-fm350_gl/compile V=s -j$(nproc) || make package/feeds/mrhaavfeed/atc-fib-fm350_gl/compile V=s
-          make package/feeds/mrhaavfeed/luci-proto-atc/compile V=s -j$(nproc) || make package/feeds/mrhaavfeed/luci-proto-atc/compile V=s
+          make package/feeds/mrhaavfeed/atc-fib-fm350_gl/compile V=s
+          make package/feeds/mrhaavfeed/luci-proto-atc/compile V=s
 
       - name: Collect mrhaav IPKs
         run: |
           mkdir -p ipks-mrhaav
-          find "immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64/bin" -name "*.ipk" | while read -r ipk; do
-            filename=$(basename "$ipk")
-            if [[ "$filename" =~ ^atc-fib-fm350_gl_ ]] || \
-               [[ "$filename" =~ ^luci-proto-atc_ ]]; then
-              echo "Copying mrhaav IPK: $filename"
-              cp "$ipk" ipks-mrhaav/
-            fi
-          done
+          SDK_DIR=$(ls -d immortalwrt-sdk-* | head -1)
+          ARCH="arm_cortex-a9_vfpv3-d16"
+          cp "$SDK_DIR/bin/packages/$ARCH/mrhaavfeed/"*.ipk ipks-mrhaav/ 2>/dev/null || true
+          find "$SDK_DIR/bin" -name "atc-fib-fm350_gl_*.ipk" -o -name "luci-proto-atc_*.ipk" | xargs -I{} cp {} ipks-mrhaav/ 2>/dev/null || true
           echo "=== Collected mrhaav IPKs ==="
           ls -lh ipks-mrhaav/
           [ "$(ls ipks-mrhaav/*.ipk 2>/dev/null | wc -l)" -gt 0 ] || \
@@ -369,14 +365,14 @@ jobs:
         uses: actions/cache@v4
         with:
           path: immortalwrt-sdk-*
-          key: sdk-mvebu-cortexa9-24.10.4-v1-argon
+          key: sdk-mvebu-cortexa9-24.10.4-v1
 
-      - name: Download & extract SDK
+      - name: Download & extract SDK (24.10.4)
         if: steps.cache-sdk.outputs.cache-hit != 'true'
         run: |
-          wget -q "${{ env.SDK_URL }}"
-          tar --zstd -xf "${{ env.SDK_TAR }}"
-          rm -f "${{ env.SDK_TAR }}"
+          SDK_URL="https://downloads.immortalwrt.org/releases/24.10.4/targets/mvebu/cortexa9/immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64.tar.zst"
+          wget -q "$SDK_URL"
+          tar --zstd -xf immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64.tar.zst
 
       - name: Create proper feed directory structure
         run: |
@@ -387,7 +383,8 @@ jobs:
 
       - name: Set up feeds (argon feed + essential ImmortalWrt)
         run: |
-          cd "immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64"
+          SDK_DIR=$(ls -d immortalwrt-sdk-* | head -1)
+          cd "$SDK_DIR"
           rm -rf feeds/base
           rm -f feeds.conf feeds.conf.default
           printf '%s\n' "src-link argonfeed ${{ github.workspace }}/argonfeed"                       >> feeds.conf.default
@@ -400,7 +397,8 @@ jobs:
 
       - name: Build packages
         run: |
-          cd "immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64"
+          SDK_DIR=$(ls -d immortalwrt-sdk-* | head -1)
+          cd "$SDK_DIR"
           echo "CONFIG_PACKAGE_luci-theme-argon=m" >> .config
           echo "CONFIG_PACKAGE_luci-app-argon-config=m" >> .config
           make defconfig
@@ -410,14 +408,11 @@ jobs:
       - name: Collect Argon IPKs
         run: |
           mkdir -p ipks-argon
-          find "immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64/bin" -name "*.ipk" | while read -r ipk; do
-            filename=$(basename "$ipk")
-            if [[ "$filename" =~ ^luci-theme-argon ]] || \
-               [[ "$filename" =~ ^luci-app-argon-config ]]; then
-              echo "Copying Argon IPK: $filename"
-              cp "$ipk" ipks-argon/
-            fi
-          done
+          SDK_DIR=$(ls -d immortalwrt-sdk-* | head -1)
+          ARCH="arm_cortex-a9_vfpv3-d16"
+          cp "$SDK_DIR/bin/packages/$ARCH/argonfeed/"*.ipk ipks-argon/ 2>/dev/null || true
+          find "$SDK_DIR/bin" -name "luci-theme-argon_*.ipk" -o -name "luci-app-argon-config_*.ipk" | xargs -I{} cp {} ipks-argon/ 2>/dev/null || true
+          
           echo "=== Collected Argon IPKs ==="
           ls -lh ipks-argon/
           [ "$(ls ipks-argon/*.ipk 2>/dev/null | wc -l)" -gt 0 ] || \
