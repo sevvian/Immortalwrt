@@ -1,4 +1,4 @@
-name: v2 Combined ImmortalWrt 24.10.4 (mvebu/cortexa9)
+name: Build QModem + Extras for ImmortalWrt 24.10.4 (mvebu/cortexa9)
 
 on:
   workflow_dispatch:
@@ -79,7 +79,7 @@ jobs:
           path: qmodem-source
           ref: main
 
-      - name: Install build dependencies
+      - name: Prepare build environment
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -92,161 +92,72 @@ jobs:
         id: cache-sdk
         uses: actions/cache@v4
         with:
-          path: ${{ env.SDK_NAME }}
-          key: sdk-mvebu-cortexa9-24.10.4-v6
+          path: immortalwrt-sdk-*
+          key: sdk-mvebu-cortexa9-24.10.4-v1-qmodem
 
-      - name: Download & extract SDK
+      - name: Download & extract SDK (24.10.4)
         if: steps.cache-sdk.outputs.cache-hit != 'true'
         run: |
-          wget -q "${{ env.SDK_URL }}"
-          tar --zstd -xf "${{ env.SDK_TAR }}"
-          rm -f "${{ env.SDK_TAR }}"
+          SDK_URL="https://downloads.immortalwrt.org/releases/24.10.4/targets/mvebu/cortexa9/immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64.tar.zst"
+          wget -q "$SDK_URL"
+          tar --zstd -xf immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64.tar.zst
 
-      # Feed setup from timesync-test: delete everything, add qmodem+luci+packages,
-      # then apply the luci-app-diskman workaround before install.
-      - name: Set up feeds
+      - name: Set up feeds (QModem + essential ImmortalWrt feeds)
         run: |
-          cd "${{ env.SDK_NAME }}"
+          SDK_DIR=$(ls -d immortalwrt-sdk-* | head -1)
+          cd "$SDK_DIR"
           rm -rf feeds/base
           rm -f feeds.conf feeds.conf.default
-          printf '%s\n' "src-link qmodem   ${{ github.workspace }}/qmodem-source"                     >> feeds.conf.default
-          printf '%s\n' "src-git  luci     https://github.com/immortalwrt/luci.git;openwrt-24.10"     >> feeds.conf.default
-          printf '%s\n' "src-git  packages https://github.com/immortalwrt/packages.git;openwrt-24.10" >> feeds.conf.default
+          printf '%s\n' "src-link qmodem ${{ github.workspace }}/qmodem-source" >> feeds.conf.default
+          printf '%s\n' "src-git luci https://github.com/immortalwrt/luci.git;openwrt-24.10" >> feeds.conf.default
+          printf '%s\n' "src-git packages https://github.com/immortalwrt/packages.git;openwrt-24.10" >> feeds.conf.default
           ./scripts/feeds update -a
           # WORKAROUND: remove conflicting package that causes circular deps
           rm -rf feeds/luci/applications/luci-app-diskman
           ./scripts/feeds install -a
-          echo "=== qmodem feed packages ==="
-          ls package/feeds/qmodem/ | sort
 
-      # Config from timesync-test: all kmod stubs, vendor kmods, userspace, feature flags
-      - name: Write .config and run defconfig
+      - name: Configure and build QModem packages
         run: |
-          cd "${{ env.SDK_NAME }}"
-
-          # ── Kernel USB stubs ──────────────────────────────────────────────
-          echo 'CONFIG_PACKAGE_kmod-usb-core=m' >> .config
-          echo 'CONFIG_PACKAGE_kmod-usb-net=m'  >> .config
-          echo 'CONFIG_PACKAGE_kmod-usb-wdm=m'  >> .config
-          echo 'CONFIG_PACKAGE_kmod-mii=m'       >> .config
-
-          # ── QModem core userspace ─────────────────────────────────────────
-          echo 'CONFIG_PACKAGE_qmodem=m'                  >> .config
-          echo 'CONFIG_PACKAGE_qmodem_monitor=m'          >> .config
-          echo 'CONFIG_PACKAGE_tom_modem=m'               >> .config
-          echo 'CONFIG_PACKAGE_ubus-at-daemon=m'          >> .config
-          echo 'CONFIG_PACKAGE_sms-forwarder=m'           >> .config
-          echo 'CONFIG_PACKAGE_sms-forwarder-next=m'      >> .config
-          echo 'CONFIG_PACKAGE_sms-tool_q=m'              >> .config
-          echo 'CONFIG_PACKAGE_quectel-CM-5G-M=m'         >> .config
-          echo 'CONFIG_PACKAGE_luci-app-qmodem-next=m'    >> .config
-          echo 'CONFIG_PACKAGE_luci-app-qmodem-monitor=m' >> .config
-
-          # ── Feature-flag symbols (gate qmodem DEPENDS conditionals) ───────
-          echo 'CONFIG_PACKAGE_luci-app-qmodem_INCLUDE_vendor-qmi-wwan=y'       >> .config
-          echo 'CONFIG_PACKAGE_luci-app-qmodem_VENDOR_MHI_PCIe_DRIVER=y'        >> .config
-          echo 'CONFIG_PACKAGE_luci-app-qmodem_USE_TOM_CUSTOMIZED_QUECTEL_CM=y' >> .config
-          echo 'CONFIG_PACKAGE_luci-app-qmodem_INCLUDE_ndisc6=y'                >> .config
-
-          # ── Dynamic Config: Scan feed and enable all found qmodem packages ──
-          find package/feeds/qmodem/ -name Makefile | while read -r makefile; do
-            grep -E '^\s*define (Package|KernelPackage)/' "$makefile" | sed -E 's/^\s*define (Package|KernelPackage)\/([a-zA-Z0-9_-]+).*/\2/' | while read -r pkg; do
-              if [ -n "$pkg" ]; then
-                if grep -q "KernelPackage/$pkg" "$makefile"; then
-                  echo "Enabling CONFIG_PACKAGE_kmod-$pkg=m"
-                  echo "CONFIG_PACKAGE_kmod-$pkg=m" >> .config
-                else
-                  echo "Enabling CONFIG_PACKAGE_$pkg=m"
-                  echo "CONFIG_PACKAGE_$pkg=m" >> .config
-                fi
-              fi
-            done
-          done
-
+          SDK_DIR=$(ls -d immortalwrt-sdk-* | head -1)
+          cd "$SDK_DIR"
+          echo "CONFIG_PACKAGE_luci-app-qmodem-next=m" >> .config
+          echo "CONFIG_PACKAGE_luci-app-qmodem-monitor=m" >> .config
+          echo "CONFIG_PACKAGE_quectel_CM_5G_M=m" >> .config
+          echo "# CONFIG_PACKAGE_quectel-CM-5G is not set" >> .config
+          echo "# CONFIG_PACKAGE_quectel-cm is not set" >> .config
+          echo "CONFIG_PACKAGE_kmod-qmi-wwan-q=m" >> .config
+          echo "CONFIG_PACKAGE_kmod-qmi-wwan-f=m" >> .config
+          echo "CONFIG_PACKAGE_kmod-qmi-wwan-s=m" >> .config
+          echo "CONFIG_PACKAGE_luci-app-qmodem_INCLUDE_vendor-qmi-wwan=y" >> .config
+          echo "# CONFIG_PACKAGE_luci-app-qmodem_INCLUDE_generic-qmi-wwan is not set" >> .config
+          echo "# CONFIG_PACKAGE_quectel_MHI is not set" >> .config
+          echo "# CONFIG_PACKAGE_fibocom_MHI is not set" >> .config
+          echo "# CONFIG_PACKAGE_simcom_MHI is not set" >> .config
           make defconfig
+          make package/luci-app-qmodem-next/compile V=s
+          make package/luci-app-qmodem-monitor/compile V=s
 
-          echo "=== Final config — qmodem-related lines ==="
-          grep -E "^CONFIG_PACKAGE_(kmod-qmi_wwan|kmod-pcie_mhi|qmodem|tom_modem|ubus-at|sms-|quectel|luci-app-qmodem)" \
-               .config | sort
-
-      # Build packages individually using directory target names (to avoid compiling Qt6, Boost, etc.)
-      - name: Build all QModem packages
-        run: |
-          cd "${{ env.SDK_NAME }}"
-          
-          echo "=== Compiling specific QModem packages (resolving dependencies) ==="
-          # Compile kernel modules
-          make package/kmod-qmi_wwan_q/compile V=s -j$(nproc) || make package/kmod-qmi_wwan_q/compile V=s || true
-          make package/kmod-qmi_wwan_f/compile V=s -j$(nproc) || make package/kmod-qmi_wwan_f/compile V=s || true
-          make package/kmod-qmi_wwan_s/compile V=s -j$(nproc) || make package/kmod-qmi_wwan_s/compile V=s || true
-          make package/kmod-pcie_mhi/compile V=s -j$(nproc) || make package/kmod-pcie_mhi/compile V=s || true
-
-          # Compile userspace apps
-          make package/qmodem/compile V=s -j$(nproc) || make package/qmodem/compile V=s || true
-          make package/qmodem_monitor/compile V=s -j$(nproc) || make package/qmodem_monitor/compile V=s || true
-          make package/tom_modem/compile V=s -j$(nproc) || make package/tom_modem/compile V=s || true
-          make package/ubus-at-daemon/compile V=s -j$(nproc) || make package/ubus-at-daemon/compile V=s || true
-          make package/sms-forwarder/compile V=s -j$(nproc) || make package/sms-forwarder/compile V=s || true
-          make package/sms-forwarder-next/compile V=s -j$(nproc) || make package/sms-forwarder-next/compile V=s || true
-          make package/sms-tool_q/compile V=s -j$(nproc) || make package/sms-tool_q/compile V=s || true
-          make package/quectel-CM-5G-M/compile V=s -j$(nproc) || make package/quectel-CM-5G-M/compile V=s || true
-
-          # Compile LuCI interfaces
-          make package/luci-app-qmodem-next/compile V=s -j$(nproc) || make package/luci-app-qmodem-next/compile V=s || true
-          make package/luci-app-qmodem-monitor/compile V=s -j$(nproc) || make package/luci-app-qmodem-monitor/compile V=s || true
-
-          # Compile each subdirectory under package/feeds/qmodem/ (as a dynamic fallback)
-          echo "=== Running dynamic compilation loop fallback ==="
-          for dir in package/feeds/qmodem/*; do
-            if [ -d "$dir" ]; then
-              pkg=$(basename "$dir")
-              echo "=== Compiling QModem package fallback: $pkg ==="
-              make "package/feeds/qmodem/$pkg/compile" V=s -j$(nproc) || {
-                echo "WARNING: Failed to compile $pkg with multi-threading, trying single thread..."
-                make "package/feeds/qmodem/$pkg/compile" V=s || echo "ERROR: Failed to compile $pkg"
-              }
-            fi
-          done
-
-          echo ""
-          echo "=== Build complete — key artifacts ==="
-          find bin/ -name "*.ipk" | sort
-
-      - name: Collect QModem IPKs
+      - name: Collect QModem + dependency IPKs
         run: |
           mkdir -p ipks-qmodem
-
-          # Approach 1: Directly harvest all userspace IPKs from the compiled qmodem feed packages directory.
-          # This guarantees that ANY userspace package built from this feed is collected, regardless of its name.
-          find "${{ env.SDK_NAME }}/bin" -path "*/qmodem/*.ipk" | while read -r ipk; do
-            echo "Copying QModem feed IPK: $(basename "$ipk")"
-            cp "$ipk" ipks-qmodem/
+          SDK_DIR=$(ls -d immortalwrt-sdk-* | head -1)
+          ARCH="arm_cortex-a9_vfpv3-d16"
+          
+          # Copy userspace packages from feed directory
+          cp "$SDK_DIR/bin/packages/$ARCH/qmodem/"*.ipk ipks-qmodem/ 2>/dev/null || true
+          
+          # Recursively find any driver kmod packages and copy them
+          find "$SDK_DIR/bin" -name "kmod-qmi*.ipk" -exec cp {} ipks-qmodem/ \; 2>/dev/null || true
+          find "$SDK_DIR/bin" -name "kmod-pcie*.ipk" -exec cp {} ipks-qmodem/ \; 2>/dev/null || true
+          
+          # Copy dependencies as defined in reference actions
+          for pkg in curl terminfo bc coreutils coreutils-stat usbutils; do
+            cp "$SDK_DIR/bin/packages/$ARCH/packages/${pkg}_"*.ipk ipks-qmodem/ 2>/dev/null || \
+            cp "$SDK_DIR/bin/packages/$ARCH/base/${pkg}_"*.ipk ipks-qmodem/ 2>/dev/null || \
+            echo "Note: $pkg not found"
           done
-
-          # Approach 2: Scan the entire bin/ directory for any matching QModem driver or userspace patterns (as fallback/redundancy)
-          find "${{ env.SDK_NAME }}/bin" -name "*.ipk" | while read -r ipk; do
-            filename=$(basename "$ipk")
-            # If already copied, skip it to avoid duplicates
-            if [ -f "ipks-qmodem/$filename" ]; then
-              continue
-            fi
-            if [[ "$filename" =~ ^kmod-qmi_wwan ]] || \
-               [[ "$filename" =~ ^kmod-pcie_mhi ]] || \
-               [[ "$filename" =~ ^qmodem ]] || \
-               [[ "$filename" =~ ^tom_modem ]] || \
-               [[ "$filename" =~ ^ubus-at-daemon ]] || \
-               [[ "$filename" =~ ^sms-forwarder ]] || \
-               [[ "$filename" =~ ^sms-tool_q ]] || \
-               [[ "$filename" =~ ^quectel-CM-5G-M ]] || \
-               [[ "$filename" =~ ^luci-app-qmodem ]]; then
-              echo "Copying QModem IPK (pattern match): $filename"
-              cp "$ipk" ipks-qmodem/
-            fi
-          done
-
-          echo "=== Collected QModem IPKs ==="
+          
           ls -lh ipks-qmodem/
-
           [ "$(ls ipks-qmodem/*.ipk 2>/dev/null | wc -l)" -gt 0 ] || \
             { echo "FATAL: zero IPKs collected — aborting"; exit 1; }
 
@@ -282,8 +193,8 @@ jobs:
         id: cache-sdk
         uses: actions/cache@v4
         with:
-          path: ${{ env.SDK_NAME }}
-          key: sdk-mvebu-cortexa9-24.10.4-v6
+          path: immortalwrt-sdk-*
+          key: sdk-mvebu-cortexa9-24.10.4-v1-timesync
 
       - name: Download & extract SDK
         if: steps.cache-sdk.outputs.cache-hit != 'true'
@@ -298,17 +209,17 @@ jobs:
       - name: Copy packages into SDK and set up feeds
         run: |
           cp -r quectel-source/openwrt/quectel-timesync \
-            "${{ env.SDK_NAME }}/package/quectel-timesync"
+            "immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64/package/quectel-timesync"
           cp -r quectel-source/luci-app-quectel-timesync \
-            "${{ env.SDK_NAME }}/package/luci-app-quectel-timesync"
-          cd "${{ env.SDK_NAME }}"
+            "immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64/package/luci-app-quectel-timesync"
+          cd "immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64"
           rm -rf feeds/base
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
       - name: Build timesync packages
         run: |
-          cd "${{ env.SDK_NAME }}"
+          cd "immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64"
           echo 'CONFIG_PACKAGE_quectel-timesync=m'          >> .config
           echo 'CONFIG_PACKAGE_luci-app-quectel-timesync=m' >> .config
           make defconfig
@@ -318,7 +229,7 @@ jobs:
       - name: Collect timesync IPKs
         run: |
           mkdir -p ipks-timesync
-          find "${{ env.SDK_NAME }}/bin" -name "*.ipk" | while read -r ipk; do
+          find "immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64/bin" -name "*.ipk" | while read -r ipk; do
             filename=$(basename "$ipk")
             if [[ "$filename" =~ ^quectel-timesync_ ]] || \
                [[ "$filename" =~ ^luci-app-quectel-timesync_ ]]; then
@@ -366,8 +277,8 @@ jobs:
         id: cache-sdk
         uses: actions/cache@v4
         with:
-          path: ${{ env.SDK_NAME }}
-          key: sdk-mvebu-cortexa9-24.10.4-v6
+          path: immortalwrt-sdk-*
+          key: sdk-mvebu-cortexa9-24.10.4-v1-mrhaav
 
       - name: Download & extract SDK
         if: steps.cache-sdk.outputs.cache-hit != 'true'
@@ -384,7 +295,7 @@ jobs:
           cp -r mrhaav-source/atc-fib-fm350_gl/*              mrhaavfeed/atc-fib-fm350_gl/
           cp -r mrhaav-source/luci/protocols/luci-proto-atc/* mrhaavfeed/luci-proto-atc/
 
-          cd "${{ env.SDK_NAME }}"
+          cd "immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64"
           rm -rf feeds/base
           rm -f feeds.conf feeds.conf.default
           printf '%s\n' "src-link mrhaavfeed ${{ github.workspace }}/mrhaavfeed"               >> feeds.conf.default
@@ -395,7 +306,7 @@ jobs:
 
       - name: Build mrhaav packages
         run: |
-          cd "${{ env.SDK_NAME }}"
+          cd "immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64"
           echo 'CONFIG_PACKAGE_atc-fib-fm350_gl=m' >> .config
           echo 'CONFIG_PACKAGE_luci-proto-atc=m'   >> .config
           make defconfig
@@ -405,7 +316,7 @@ jobs:
       - name: Collect mrhaav IPKs
         run: |
           mkdir -p ipks-mrhaav
-          find "${{ env.SDK_NAME }}/bin" -name "*.ipk" | while read -r ipk; do
+          find "immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64/bin" -name "*.ipk" | while read -r ipk; do
             filename=$(basename "$ipk")
             if [[ "$filename" =~ ^atc-fib-fm350_gl_ ]] || \
                [[ "$filename" =~ ^luci-proto-atc_ ]]; then
@@ -457,8 +368,8 @@ jobs:
         id: cache-sdk
         uses: actions/cache@v4
         with:
-          path: ${{ env.SDK_NAME }}
-          key: sdk-mvebu-cortexa9-24.10.4-v6
+          path: immortalwrt-sdk-*
+          key: sdk-mvebu-cortexa9-24.10.4-v1-argon
 
       - name: Download & extract SDK
         if: steps.cache-sdk.outputs.cache-hit != 'true'
@@ -467,14 +378,16 @@ jobs:
           tar --zstd -xf "${{ env.SDK_TAR }}"
           rm -f "${{ env.SDK_TAR }}"
 
-      - name: Create feed directory and set up feeds
+      - name: Create proper feed directory structure
         run: |
           mkdir -p argonfeed/luci-theme-argon
           mkdir -p argonfeed/luci-app-argon-config
           cp -r argon-theme-source/*  argonfeed/luci-theme-argon/
           cp -r argon-config-source/* argonfeed/luci-app-argon-config/
 
-          cd "${{ env.SDK_NAME }}"
+      - name: Set up feeds (argon feed + essential ImmortalWrt)
+        run: |
+          cd "immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64"
           rm -rf feeds/base
           rm -f feeds.conf feeds.conf.default
           printf '%s\n' "src-link argonfeed ${{ github.workspace }}/argonfeed"                       >> feeds.conf.default
@@ -485,31 +398,19 @@ jobs:
           rm -rf feeds/luci/applications/luci-app-diskman
           ./scripts/feeds install -a
 
-      - name: Build Argon packages
+      - name: Build packages
         run: |
-          cd "${{ env.SDK_NAME }}"
-          echo 'CONFIG_PACKAGE_luci-theme-argon=m'      >> .config
-          echo 'CONFIG_PACKAGE_luci-app-argon-config=m' >> .config
-          
-          # Force dependencies selection so openssl & wget configure correctly
-          echo 'CONFIG_PACKAGE_libopenssl=m'            >> .config
-          echo 'CONFIG_PACKAGE_wget-ssl=m'               >> .config
+          cd "immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64"
+          echo "CONFIG_PACKAGE_luci-theme-argon=m" >> .config
+          echo "CONFIG_PACKAGE_luci-app-argon-config=m" >> .config
           make defconfig
-
-          # Build core dependencies first to resolve openssl/des.h header dependency in wget-ssl
-          echo "=== Building core dependencies (openssl & wget) ==="
-          make package/libopenssl/compile V=s -j$(nproc) || make package/feeds/packages/openssl/compile V=s || true
-          make package/wget/compile V=s -j$(nproc) || make package/feeds/packages/wget/compile V=s || true
-
-          # Build themes and application configurations
-          echo "=== Building Argon targets ==="
-          make package/feeds/argonfeed/luci-theme-argon/compile V=s -j$(nproc) || make package/feeds/argonfeed/luci-theme-argon/compile V=s || true
-          make package/feeds/argonfeed/luci-app-argon-config/compile V=s -j$(nproc) || make package/feeds/argonfeed/luci-app-argon-config/compile V=s || true
+          make package/feeds/argonfeed/luci-theme-argon/compile V=s
+          make package/feeds/argonfeed/luci-app-argon-config/compile V=s
 
       - name: Collect Argon IPKs
         run: |
           mkdir -p ipks-argon
-          find "${{ env.SDK_NAME }}/bin" -name "*.ipk" | while read -r ipk; do
+          find "immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64/bin" -name "*.ipk" | while read -r ipk; do
             filename=$(basename "$ipk")
             if [[ "$filename" =~ ^luci-theme-argon ]] || \
                [[ "$filename" =~ ^luci-app-argon-config ]]; then
