@@ -1,4 +1,4 @@
-name: V3 combined for raspi4b ImmortalWrt 24.10.6 (bcm2711/aarch64)
+name: V3 combined raspi4b for ImmortalWrt 24.10.6 (bcm2711/aarch64)
 
 on:
   workflow_dispatch:
@@ -102,6 +102,19 @@ jobs:
           wget -q "$SDK_URL"
           tar --zstd -xf "${{ env.SDK_TAR }}"
 
+      # Copy core development headers from host to the SDK target staging include area
+      - name: Populate SDK staging headers from host
+        run: |
+          SDK_DIR=$(ls -d immortalwrt-sdk-* | head -1)
+          cd "$SDK_DIR"
+          STAGING_USR_INCLUDE=$(find staging_dir/ -type d -path "staging_dir/target-*/usr/include" | head -1)
+          if [ -n "$STAGING_USR_INCLUDE" ]; then
+            echo "Populating headers into $STAGING_USR_INCLUDE"
+            sudo apt-get update && sudo apt-get install -y liblua5.1-0-dev libssl-dev
+            cp -r /usr/include/lua5.1/* "$STAGING_USR_INCLUDE/" || true
+            cp -r /usr/include/openssl "$STAGING_USR_INCLUDE/" || true
+          fi
+
       - name: Set up feeds (QModem + essential ImmortalWrt feeds)
         run: |
           SDK_DIR=$(ls -d immortalwrt-sdk-* | head -1)
@@ -133,18 +146,7 @@ jobs:
           echo "# CONFIG_PACKAGE_quectel_MHI is not set" >> .config
           echo "# CONFIG_PACKAGE_fibocom_MHI is not set" >> .config
           echo "# CONFIG_PACKAGE_simcom_MHI is not set" >> .config
-          
-          # Force dependency extraction of liblua5.1 by selecting it as built-in
-          echo "CONFIG_PACKAGE_liblua5.1=y" >> .config
-          echo "CONFIG_PACKAGE_liblucihttp=y" >> .config
-          echo "CONFIG_PACKAGE_luci-base=y" >> .config
-          echo "CONFIG_PACKAGE_luci-compat=y" >> .config
-          
           make defconfig
-          
-          # Compile versioned lua5.1 from packages feed first to provide lua.h dependency
-          make package/feeds/packages/lua5.1/compile V=s -j$(nproc) || make package/feeds/packages/lua5.1/compile V=s
-          
           make package/luci-app-qmodem-next/compile V=s
           make package/luci-app-qmodem-monitor/compile V=s
 
@@ -385,6 +387,18 @@ jobs:
           wget -q "$SDK_URL"
           tar --zstd -xf "${{ env.SDK_TAR }}"
 
+      # Copy core development headers from host to the SDK target staging include area
+      - name: Populate SDK staging headers from host
+        run: |
+          SDK_DIR=$(ls -d immortalwrt-sdk-* | head -1)
+          cd "$SDK_DIR"
+          STAGING_USR_INCLUDE=$(find staging_dir/ -type d -path "staging_dir/target-*/usr/include" | head -1)
+          if [ -n "$STAGING_USR_INCLUDE" ]; then
+            echo "Populating headers into $STAGING_USR_INCLUDE"
+            sudo apt-get update && sudo apt-get install -y libssl-dev
+            cp -r /usr/include/openssl "$STAGING_USR_INCLUDE/" || true
+          fi
+
       - name: Create proper feed directory structure
         run: |
           mkdir -p argonfeed/luci-theme-argon
@@ -412,16 +426,7 @@ jobs:
           cd "$SDK_DIR"
           echo "CONFIG_PACKAGE_luci-theme-argon=m" >> .config
           echo "CONFIG_PACKAGE_luci-app-argon-config=m" >> .config
-          
-          # Force dependencies selection so openssl & wget configure correctly
-          echo "CONFIG_PACKAGE_libopenssl=y" >> .config
-          echo "CONFIG_PACKAGE_wget-ssl=y" >> .config
-          
           make defconfig
-          
-          # Compile wget from packages feed (which automatically extracts libopenssl headers into staging)
-          make package/feeds/packages/wget/compile V=s -j$(nproc) || make package/feeds/packages/wget/compile V=s
-          
           make package/feeds/argonfeed/luci-theme-argon/compile V=s
           make package/feeds/argonfeed/luci-app-argon-config/compile V=s
 
