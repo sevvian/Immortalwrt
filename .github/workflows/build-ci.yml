@@ -27,6 +27,7 @@ jobs:
       build_needed: ${{ steps.check.outputs.build_needed }}
       upstream_sha: ${{ steps.check.outputs.upstream_sha }}
     steps:
+      # Cache restore MUST come before the step that reads .last_built_sha
       - name: Restore last built SHA cache
         uses: actions/cache@v4
         with:
@@ -135,13 +136,15 @@ jobs:
           tar --zstd -xf "${{ env.SDK_TAR }}"
           rm -f "${{ env.SDK_TAR }}"
 
-      # ── Prepare feed directories ──────────────────────────────────────────
+      # ── Prepare feed directories for mrhaav and argon ────────────────────
+      # Each src-link feed directory must contain one sub-directory per package.
+      # quectel-timesync goes directly into SDK package/ (not a feed).
       - name: Create feed directory structures
         run: |
           # mrhaav: one sub-directory per package inside mrhaavfeed/
           mkdir -p mrhaavfeed/atc-fib-fm350_gl
           mkdir -p mrhaavfeed/luci-proto-atc
-          cp -r mrhaav-source/atc-fib-fm350_gl/*             mrhaavfeed/atc-fib-fm350_gl/
+          cp -r mrhaav-source/atc-fib-fm350_gl/*              mrhaavfeed/atc-fib-fm350_gl/
           cp -r mrhaav-source/luci/protocols/luci-proto-atc/* mrhaavfeed/luci-proto-atc/
 
           # argon: one sub-directory per package inside argonfeed/
@@ -150,9 +153,9 @@ jobs:
           cp -r argon-theme-source/*  argonfeed/luci-theme-argon/
           cp -r argon-config-source/* argonfeed/luci-app-argon-config/
 
-          # quectel-timesync: drop directly into SDK package/ (not a feed)
-          cp -r quectel-source/openwrt/quectel-timesync      "${{ env.SDK_NAME }}/package/quectel-timesync"
-          cp -r quectel-source/luci-app-quectel-timesync     "${{ env.SDK_NAME }}/package/luci-app-quectel-timesync"
+          # quectel-timesync: place directly into SDK package/ tree
+          cp -r quectel-source/openwrt/quectel-timesync     "${{ env.SDK_NAME }}/package/quectel-timesync"
+          cp -r quectel-source/luci-app-quectel-timesync    "${{ env.SDK_NAME }}/package/luci-app-quectel-timesync"
 
       # ── Feeds ─────────────────────────────────────────────────────────────
       - name: Set up feeds and remove diskman
@@ -161,6 +164,7 @@ jobs:
           rm -rf feeds/base
           rm -f feeds.conf feeds.conf.default
 
+          # QModem: the repo root IS the feed (feeds scans recursively for Makefiles)
           printf '%s\n' "src-link qmodem     ${{ github.workspace }}/qmodem-source"                     >> feeds.conf.default
           printf '%s\n' "src-link mrhaavfeed ${{ github.workspace }}/mrhaavfeed"                         >> feeds.conf.default
           printf '%s\n' "src-link argonfeed  ${{ github.workspace }}/argonfeed"                          >> feeds.conf.default
@@ -169,64 +173,59 @@ jobs:
 
           ./scripts/feeds update -a
 
-          # Remove diskman AFTER update but BEFORE install to break the circular dep
+          # Remove diskman AFTER update but BEFORE install to break circular dep
           rm -rf feeds/luci/applications/luci-app-diskman
 
           ./scripts/feeds install -a
 
           echo "=== qmodem feed symlinks ==="
           ls package/feeds/qmodem/ | sort
-          echo "=== mrhaav feed symlinks ==="
-          ls package/feeds/mrhaavfeed/ | sort
-          echo "=== argon feed symlinks ==="
-          ls package/feeds/argonfeed/ | sort
 
       # ── .config ───────────────────────────────────────────────────────────
-      # NOTE: No heredoc here. Heredoc content at column 0 inside a YAML
-      # literal block scalar (|) causes the YAML parser to terminate the
-      # run: block early, corrupting the on: trigger and causing the workflow
-      # to fire on push instead of only on workflow_dispatch. Use echo only.
+      # Use only echo statements — no heredoc — to avoid column-0 content
+      # breaking the YAML literal block scalar and corrupting the on: trigger.
       - name: Configure build
         run: |
           cd "${{ env.SDK_NAME }}"
 
-          # Base flags — written one per line to avoid any heredoc / column-0 issue
           echo 'CONFIG_ALL=n'       > .config
           echo 'CONFIG_ALL_KMODS=n' >> .config
           echo 'CONFIG_DEVEL=y'     >> .config
 
-          # Kernel USB stubs required by vendor kmod Makefiles
+          # Kernel USB stubs (required by vendor kmod DEPENDS)
           echo 'CONFIG_PACKAGE_kmod-usb-core=m' >> .config
           echo 'CONFIG_PACKAGE_kmod-usb-net=m'  >> .config
           echo 'CONFIG_PACKAGE_kmod-usb-wdm=m'  >> .config
           echo 'CONFIG_PACKAGE_kmod-mii=m'      >> .config
 
           # QModem vendor kernel modules
+          # CONFIG symbol = kmod-<KernelPackage/NAME> from each driver Makefile
           echo 'CONFIG_PACKAGE_kmod-qmi_wwan_q=m' >> .config
           echo 'CONFIG_PACKAGE_kmod-qmi_wwan_f=m' >> .config
           echo 'CONFIG_PACKAGE_kmod-qmi_wwan_s=m' >> .config
           echo 'CONFIG_PACKAGE_kmod-pcie_mhi=m'   >> .config
 
-          # QModem core userspace
-          echo 'CONFIG_PACKAGE_qmodem=m'             >> .config
-          echo 'CONFIG_PACKAGE_qmodem_monitor=m'     >> .config
-          echo 'CONFIG_PACKAGE_tom_modem=m'          >> .config
-          echo 'CONFIG_PACKAGE_ubus-at-daemon=m'     >> .config
-          echo 'CONFIG_PACKAGE_sms-tool_q=m'         >> .config
+          # QModem core userspace (PKG_NAME values from application/*/Makefile)
+          echo 'CONFIG_PACKAGE_qmodem=m'           >> .config
+          echo 'CONFIG_PACKAGE_qmodem_monitor=m'   >> .config
+          echo 'CONFIG_PACKAGE_tom_modem=m'        >> .config
+          echo 'CONFIG_PACKAGE_ubus-at-daemon=m'   >> .config
+          echo 'CONFIG_PACKAGE_sms-tool_q=m'       >> .config
           echo 'CONFIG_PACKAGE_sms-forwarder-next=m' >> .config
-          echo 'CONFIG_PACKAGE_quectel_CM_5G_M=m'    >> .config
+          # PKG_NAME in application/quectel_CM_5G_M/Makefile is "quectel-CM-5G-M" (hyphens)
+          echo 'CONFIG_PACKAGE_quectel-CM-5G-M=m'  >> .config
 
-          # QModem feature-flag symbols (conditional DEPENDS gates)
+          # QModem feature-flag symbols (conditional DEPENDS gates in luci-app-qmodem)
           echo 'CONFIG_PACKAGE_luci-app-qmodem_INCLUDE_vendor-qmi-wwan=y'       >> .config
           echo 'CONFIG_PACKAGE_luci-app-qmodem_VENDOR_MHI_PCIe_DRIVER=y'        >> .config
           echo 'CONFIG_PACKAGE_luci-app-qmodem_USE_TOM_CUSTOMIZED_QUECTEL_CM=y' >> .config
           echo 'CONFIG_PACKAGE_luci-app-qmodem_INCLUDE_ndisc6=y'                >> .config
 
-          # QModem LuCI frontends
+          # QModem LuCI frontends (from luci/luci-app-qmodem-*/Makefile)
           echo 'CONFIG_PACKAGE_luci-app-qmodem-next=m'    >> .config
           echo 'CONFIG_PACKAGE_luci-app-qmodem-monitor=m' >> .config
 
-          # quectel-timesync (lives directly in package/, not a feed)
+          # quectel-timesync (lives directly in package/ - not a feed)
           echo 'CONFIG_PACKAGE_quectel-timesync=m'          >> .config
           echo 'CONFIG_PACKAGE_luci-app-quectel-timesync=m' >> .config
 
@@ -245,30 +244,45 @@ jobs:
                .config | sort
 
       # ── Build steps ───────────────────────────────────────────────────────
+      # IMPORTANT: compile paths use the SOURCE DIRECTORY NAME inside the feed,
+      # NOT the KernelPackage name or PKG_NAME.
+      #
+      # QModem repo layout → feed symlink name:
+      #   driver/quectel_QMI_WWAN → package/feeds/qmodem/quectel_QMI_WWAN
+      #   driver/fibocom_QMI_WWAN → package/feeds/qmodem/fibocom_QMI_WWAN
+      #   driver/simcom_QMI_WWAN  → package/feeds/qmodem/simcom_QMI_WWAN
+      #   driver/quectel_MHI      → package/feeds/qmodem/quectel_MHI
+      #   application/qmodem      → package/feeds/qmodem/qmodem
+      #   application/ubus_at_daemon → package/feeds/qmodem/ubus_at_daemon
+      #   application/sms_forwarder_next → package/feeds/qmodem/sms_forwarder_next
+      #   application/quectel_CM_5G_M → package/feeds/qmodem/quectel_CM_5G_M
+      #   luci/luci-app-qmodem-next → package/feeds/qmodem/luci-app-qmodem-next
+
       - name: Build vendor kmods
         run: |
           cd "${{ env.SDK_NAME }}"
-          make package/feeds/qmodem/kmod-qmi_wwan_q/compile V=s
-          make package/feeds/qmodem/kmod-qmi_wwan_f/compile V=s
-          make package/feeds/qmodem/kmod-qmi_wwan_s/compile V=s
-          make package/feeds/qmodem/kmod-pcie_mhi/compile   V=s
+          make package/feeds/qmodem/quectel_QMI_WWAN/compile V=s
+          make package/feeds/qmodem/fibocom_QMI_WWAN/compile V=s
+          make package/feeds/qmodem/simcom_QMI_WWAN/compile  V=s
+          make package/feeds/qmodem/quectel_MHI/compile      V=s
 
       - name: Build QModem userspace packages
         run: |
           cd "${{ env.SDK_NAME }}"
-          make package/feeds/qmodem/qmodem/compile             V=s
-          make package/feeds/qmodem/qmodem_monitor/compile     V=s
-          make package/feeds/qmodem/tom_modem/compile          V=s
-          make package/feeds/qmodem/ubus-at-daemon/compile     V=s
-          make package/feeds/qmodem/sms-tool_q/compile         V=s
-          make package/feeds/qmodem/sms-forwarder-next/compile V=s
-          make package/feeds/qmodem/quectel_CM_5G_M/compile    V=s
+          make package/feeds/qmodem/qmodem/compile               V=s
+          make package/feeds/qmodem/qmodem_monitor/compile       V=s
+          make package/feeds/qmodem/tom_modem/compile            V=s
+          make package/feeds/qmodem/ubus_at_daemon/compile       V=s
+          make package/feeds/qmodem/sms-tool_q/compile           V=s
+          make package/feeds/qmodem/sms_forwarder_next/compile   V=s
+          make package/feeds/qmodem/quectel_CM_5G_M/compile      V=s
           make package/feeds/qmodem/luci-app-qmodem-next/compile    V=s
           make package/feeds/qmodem/luci-app-qmodem-monitor/compile V=s
 
       - name: Build quectel-timesync
         run: |
           cd "${{ env.SDK_NAME }}"
+          # These live directly in package/ so no feeds/ prefix
           make package/quectel-timesync/compile          V=s
           make package/luci-app-quectel-timesync/compile V=s
 
@@ -291,7 +305,10 @@ jobs:
           ARCH="${{ env.ARCH }}"
           SDK_DIR="${{ env.SDK_NAME }}"
 
-          # Vendor kmods (may land under bin/targets/ or bin/packages/)
+          echo "=== Full bin/ tree ==="
+          find "$SDK_DIR/bin" -name "*.ipk" | sort
+
+          # Vendor kmods (KernelPackages land anywhere under bin/)
           find "$SDK_DIR/bin" \( \
             -name "kmod-qmi_wwan_q_*.ipk" -o \
             -name "kmod-qmi_wwan_f_*.ipk" -o \
@@ -299,8 +316,8 @@ jobs:
             -name "kmod-pcie_mhi_*.ipk"   \
           \) -exec cp {} ipks/ \;
 
-          # QModem feed packages
-          find "$SDK_DIR/bin/packages/$ARCH/qmodem/"     -name "*.ipk" \
+          # All qmodem feed packages (userspace + luci)
+          find "$SDK_DIR/bin/packages/$ARCH/qmodem/" -name "*.ipk" \
             -exec cp {} ipks/ \; 2>/dev/null || true
 
           # mrhaav feed packages
@@ -308,10 +325,10 @@ jobs:
             -exec cp {} ipks/ \; 2>/dev/null || true
 
           # argon feed packages
-          find "$SDK_DIR/bin/packages/$ARCH/argonfeed/"  -name "*.ipk" \
+          find "$SDK_DIR/bin/packages/$ARCH/argonfeed/" -name "*.ipk" \
             -exec cp {} ipks/ \; 2>/dev/null || true
 
-          # quectel-timesync (lands in base/ since it is a direct package/)
+          # quectel-timesync (lands in base/ as a direct package/)
           find "$SDK_DIR/bin" -name "quectel-timesync_*.ipk" \
             -exec cp {} ipks/ \; 2>/dev/null || true
           find "$SDK_DIR/bin" -name "luci-app-quectel-timesync_*.ipk" \
