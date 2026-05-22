@@ -1,4 +1,4 @@
-name: Build QModem TEST ImmortalWrt 24.10.4 (mvebu/cortexa9)
+name: Build QModem TEST claude for ImmortalWrt 24.10.4 (mvebu/cortexa9)
 
 on:
   workflow_dispatch:
@@ -14,19 +14,20 @@ on:
 
 env:
   SDK_NAME: immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64
-  SDK_TAR: immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64.tar.zst
-  SDK_URL: https://downloads.immortalwrt.org/releases/24.10.4/targets/mvebu/cortexa9/immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64.tar.zst
-  ARCH: arm_cortex-a9_vfpv3-d16
+  SDK_TAR:  immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64.tar.zst
+  SDK_URL:  https://downloads.immortalwrt.org/releases/24.10.4/targets/mvebu/cortexa9/immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64.tar.zst
+  ARCH:     arm_cortex-a9_vfpv3-d16
 
 jobs:
 
-  # =======================  CHECK UPSTREAM SHA  =============================
+  # ======================= CHECK UPSTREAM SHA ================================
   check-and-build:
     runs-on: ubuntu-latest
     outputs:
       build_needed: ${{ steps.check.outputs.build_needed }}
       upstream_sha: ${{ steps.check.outputs.upstream_sha }}
     steps:
+      # FIX: cache restore MUST come before the step that reads .last_built_sha
       - name: Restore last built SHA cache
         uses: actions/cache@v4
         with:
@@ -44,22 +45,36 @@ jobs:
           LAST_BUILT_SHA=$(cat .last_built_sha 2>/dev/null || echo "")
           FORCE="${{ github.event.inputs.force_rebuild }}"
 
-          if [ "$LATEST_SHA" != "$LAST_BUILT_SHA" ] || [ "$FORCE" = "true" ]; then
-            echo "build_needed=true" >> "$GITHUB_OUTPUT"
+          echo "Latest upstream SHA : $LATEST_SHA"
+          echo "Last built SHA      : $LAST_BUILT_SHA"
+          echo "Force rebuild       : $FORCE"
+
+          if [ "$LATEST_SHA" != "$LAST_BUILT_SHA" ]; then
+            echo "New commits detected — build triggered."
+            echo "build_needed=true"        >> "$GITHUB_OUTPUT"
             echo "upstream_sha=$LATEST_SHA" >> "$GITHUB_OUTPUT"
             echo "$LATEST_SHA" > .last_built_sha
+
+          elif [ "$FORCE" = "true" ]; then
+            echo "No new commits, but force_rebuild=true — build triggered anyway."
+            echo "build_needed=true"        >> "$GITHUB_OUTPUT"
+            echo "upstream_sha=$LATEST_SHA" >> "$GITHUB_OUTPUT"
+            echo "$LATEST_SHA" > .last_built_sha
+
           else
-            echo "build_needed=false" >> "$GITHUB_OUTPUT"
+            echo "No new commits and force_rebuild=false — skipping build."
+            echo "build_needed=false"       >> "$GITHUB_OUTPUT"
             echo "upstream_sha=$LATEST_SHA" >> "$GITHUB_OUTPUT"
           fi
 
-  # =======================  UNIFIED BUILD JOB  ==============================
+  # ======================= UNIFIED BUILD JOB =================================
   build-all:
     needs: check-and-build
     if: needs.check-and-build.outputs.build_needed == 'true'
     runs-on: ubuntu-latest
     steps:
-      # --- Checkout all sources ---
+
+      # ── Checkout all sources ──────────────────────────────────────────────
       - name: Checkout QModem source
         uses: actions/checkout@v4
         with:
@@ -88,17 +103,17 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: jerrykuku/luci-theme-argon
-          path: luci-theme-argon
+          path: argon-theme-source
           ref: master
 
       - name: Checkout Argon config
         uses: actions/checkout@v4
         with:
           repository: jerrykuku/luci-app-argon-config
-          path: luci-app-argon-config
+          path: argon-config-source
           ref: master
 
-      # --- Prepare SDK ---
+      # ── Build dependencies ────────────────────────────────────────────────
       - name: Install build dependencies
         run: |
           sudo apt-get update
@@ -108,6 +123,7 @@ jobs:
             libncurses-dev libssl-dev python3-dev python3-setuptools \
             rsync unzip zlib1g-dev file wget zstd
 
+      # ── SDK (cached) ──────────────────────────────────────────────────────
       - name: Restore SDK cache
         id: cache-sdk
         uses: actions/cache@v4
@@ -122,66 +138,87 @@ jobs:
           tar --zstd -xf "${{ env.SDK_TAR }}"
           rm -f "${{ env.SDK_TAR }}"
 
-      # --- Place external packages into the SDK’s package/ directory ---
-      - name: Place external packages into SDK
+      # ── Prepare feed directories ──────────────────────────────────────────
+      # FIX: mrhaav and argon must use proper src-link feed directories
+      #      (each containing package sub-directories). Placing them directly
+      #      in package/ and then trying to compile via short names fails.
+      # FIX: quectel-timesync goes directly into SDK package/ (no feed needed).
+      - name: Create feed directory structures
         run: |
-          # quectel-timesync
-          cp -r quectel-source/openwrt/quectel-timesync "${{ env.SDK_NAME }}/package/quectel-timesync"
-          cp -r quectel-source/luci-app-quectel-timesync "${{ env.SDK_NAME }}/package/luci-app-quectel-timesync"
+          # mrhaav: one sub-directory per package inside mrhaavfeed/
+          mkdir -p mrhaavfeed/atc-fib-fm350_gl
+          mkdir -p mrhaavfeed/luci-proto-atc
+          cp -r mrhaav-source/atc-fib-fm350_gl/*               mrhaavfeed/atc-fib-fm350_gl/
+          cp -r mrhaav-source/luci/protocols/luci-proto-atc/*   mrhaavfeed/luci-proto-atc/
 
-          # mrhaav packages
-          mkdir -p "${{ env.SDK_NAME }}/package/atc-fib-fm350_gl"
-          cp -r mrhaav-source/atc-fib-fm350_gl/* "${{ env.SDK_NAME }}/package/atc-fib-fm350_gl/"
-          mkdir -p "${{ env.SDK_NAME }}/package/luci-proto-atc"
-          cp -r mrhaav-source/luci/protocols/luci-proto-atc/* "${{ env.SDK_NAME }}/package/luci-proto-atc/"
+          # argon: one sub-directory per package inside argonfeed/
+          mkdir -p argonfeed/luci-theme-argon
+          mkdir -p argonfeed/luci-app-argon-config
+          cp -r argon-theme-source/*  argonfeed/luci-theme-argon/
+          cp -r argon-config-source/* argonfeed/luci-app-argon-config/
 
-          # Argon
-          cp -r luci-theme-argon "${{ env.SDK_NAME }}/package/luci-theme-argon"
-          cp -r luci-app-argon-config "${{ env.SDK_NAME }}/package/luci-app-argon-config"
+          # quectel-timesync: drop directly into SDK package/ tree
+          cp -r quectel-source/openwrt/quectel-timesync         "${{ env.SDK_NAME }}/package/quectel-timesync"
+          cp -r quectel-source/luci-app-quectel-timesync        "${{ env.SDK_NAME }}/package/luci-app-quectel-timesync"
 
-      # --- Configure feeds and work around diskman recursion ---
+      # ── Feeds ─────────────────────────────────────────────────────────────
       - name: Set up feeds and remove diskman
         run: |
-          cd ${{ env.SDK_NAME }}
+          cd "${{ env.SDK_NAME }}"
           rm -rf feeds/base
           rm -f feeds.conf feeds.conf.default
 
-          printf '%s\n' "src-link qmodem   ${{ github.workspace }}/qmodem-source"                     >> feeds.conf.default
-          printf '%s\n' "src-git  luci     https://github.com/immortalwrt/luci.git;openwrt-24.10"     >> feeds.conf.default
-          printf '%s\n' "src-git  packages https://github.com/immortalwrt/packages.git;openwrt-24.10" >> feeds.conf.default
+          # qmodem source tree is itself a multi-package feed
+          printf '%s\n' "src-link qmodem     ${{ github.workspace }}/qmodem-source"                     >> feeds.conf.default
+          # mrhaav and argon as named src-link feeds (sub-dirs are the packages)
+          printf '%s\n' "src-link mrhaavfeed ${{ github.workspace }}/mrhaavfeed"                         >> feeds.conf.default
+          printf '%s\n' "src-link argonfeed  ${{ github.workspace }}/argonfeed"                          >> feeds.conf.default
+          # Essential ImmortalWrt feeds
+          printf '%s\n' "src-git  luci       https://github.com/immortalwrt/luci.git;openwrt-24.10"     >> feeds.conf.default
+          printf '%s\n' "src-git  packages   https://github.com/immortalwrt/packages.git;openwrt-24.10" >> feeds.conf.default
 
           ./scripts/feeds update -a
 
-          # CRITICAL: remove diskman to break recursive dependency
+          # FIX: remove diskman AFTER update but BEFORE install to break
+          #      the recursive luci-app-diskman dependency loop
           rm -rf feeds/luci/applications/luci-app-diskman
 
           ./scripts/feeds install -a
 
-      # --- Write minimal .config with all required symbols ---
+          echo "=== qmodem feed symlinks ==="
+          ls package/feeds/qmodem/ | sort
+          echo "=== mrhaav feed symlinks ==="
+          ls package/feeds/mrhaavfeed/ | sort
+          echo "=== argon feed symlinks ==="
+          ls package/feeds/argonfeed/ | sort
+
+      # ── .config ───────────────────────────────────────────────────────────
+      # FIX: use single-quoted heredoc ('EOF') so the shell does NOT expand
+      #      variables, and write with ZERO leading indentation so every line
+      #      is a valid Kconfig entry (indented lines are silently ignored).
       - name: Configure build
         run: |
-          cd ${{ env.SDK_NAME }}
+          cd "${{ env.SDK_NAME }}"
 
-          # Start fresh
-          cat > .config <<EOF
-          CONFIG_ALL=n
-          CONFIG_ALL_KMODS=n
-          CONFIG_DEVEL=y
-          EOF
+          cat > .config <<'EOF'
+CONFIG_ALL=n
+CONFIG_ALL_KMODS=n
+CONFIG_DEVEL=y
+EOF
 
-          # Kernel stubs
+          # Kernel USB stubs required by vendor kmod Makefiles
           echo "CONFIG_PACKAGE_kmod-usb-core=m" >> .config
           echo "CONFIG_PACKAGE_kmod-usb-net=m"  >> .config
           echo "CONFIG_PACKAGE_kmod-usb-wdm=m"  >> .config
           echo "CONFIG_PACKAGE_kmod-mii=m"      >> .config
 
-          # QModem vendor kmods
+          # QModem vendor kernel modules
           echo "CONFIG_PACKAGE_kmod-qmi_wwan_q=m" >> .config
           echo "CONFIG_PACKAGE_kmod-qmi_wwan_f=m" >> .config
           echo "CONFIG_PACKAGE_kmod-qmi_wwan_s=m" >> .config
           echo "CONFIG_PACKAGE_kmod-pcie_mhi=m"   >> .config
 
-          # QModem userspace
+          # QModem core userspace
           echo "CONFIG_PACKAGE_qmodem=m"             >> .config
           echo "CONFIG_PACKAGE_qmodem_monitor=m"     >> .config
           echo "CONFIG_PACKAGE_tom_modem=m"          >> .config
@@ -190,7 +227,7 @@ jobs:
           echo "CONFIG_PACKAGE_sms-forwarder-next=m" >> .config
           echo "CONFIG_PACKAGE_quectel_CM_5G_M=m"    >> .config
 
-          # Feature flags
+          # QModem feature-flag symbols (conditional DEPENDS gates)
           echo "CONFIG_PACKAGE_luci-app-qmodem_INCLUDE_vendor-qmi-wwan=y"       >> .config
           echo "CONFIG_PACKAGE_luci-app-qmodem_VENDOR_MHI_PCIe_DRIVER=y"        >> .config
           echo "CONFIG_PACKAGE_luci-app-qmodem_USE_TOM_CUSTOMIZED_QUECTEL_CM=y" >> .config
@@ -200,73 +237,78 @@ jobs:
           echo "CONFIG_PACKAGE_luci-app-qmodem-next=m"    >> .config
           echo "CONFIG_PACKAGE_luci-app-qmodem-monitor=m" >> .config
 
-          # quectel-timesync
-          echo "CONFIG_PACKAGE_quectel-timesync=m"       >> .config
+          # quectel-timesync (lives in package/ directly, not a feed)
+          echo "CONFIG_PACKAGE_quectel-timesync=m"          >> .config
           echo "CONFIG_PACKAGE_luci-app-quectel-timesync=m" >> .config
 
-          # mrhaav
-          echo "CONFIG_PACKAGE_atc-fib-fm350_gl=m"   >> .config
-          echo "CONFIG_PACKAGE_luci-proto-atc=m"     >> .config
+          # mrhaav packages (via mrhaavfeed)
+          echo "CONFIG_PACKAGE_atc-fib-fm350_gl=m" >> .config
+          echo "CONFIG_PACKAGE_luci-proto-atc=m"   >> .config
 
-          # Argon
-          echo "CONFIG_PACKAGE_luci-theme-argon=m"       >> .config
-          echo "CONFIG_PACKAGE_luci-app-argon-config=m"  >> .config
+          # Argon packages (via argonfeed)
+          echo "CONFIG_PACKAGE_luci-theme-argon=m"      >> .config
+          echo "CONFIG_PACKAGE_luci-app-argon-config=m" >> .config
 
           make defconfig
 
-          # Verify that all packages are enabled
           echo "=== FINAL CONFIG CHECK ==="
-          grep -E "^CONFIG_PACKAGE_(kmod-qmi_wwan|kmod-pcie_mhi|qmodem|tom_modem|ubus-at|sms-|quectel|luci-app-qmodem|luci-theme-argon|luci-app-argon-config|atc-fib|luci-proto-atc)" \
+          grep -E "^CONFIG_PACKAGE_(kmod-|qmodem|tom_modem|ubus-at|sms-|quectel|luci-app-qmodem|luci-theme-argon|luci-app-argon|atc-fib|luci-proto)" \
                .config | sort
 
-      # --- Build each package individually (proven working pattern) ---
-      - name: Build QModem kmods
+      # ── Build steps ───────────────────────────────────────────────────────
+      # FIX: Use the full package/feeds/FEEDNAME/PKGNAME/compile path for all
+      #      feed-sourced packages. Short-form names are ambiguous across feeds
+      #      and cause "directory not found" failures in the combined workflow.
+      #      Only packages placed directly in package/ use the short form.
+
+      - name: Build vendor kmods
         run: |
-          cd ${{ env.SDK_NAME }}
-          make package/kmod-qmi_wwan_q/compile V=s
-          make package/kmod-qmi_wwan_f/compile V=s
-          make package/kmod-qmi_wwan_s/compile V=s
-          make package/kmod-pcie_mhi/compile V=s
+          cd "${{ env.SDK_NAME }}"
+          make package/feeds/qmodem/kmod-qmi_wwan_q/compile V=s
+          make package/feeds/qmodem/kmod-qmi_wwan_f/compile V=s
+          make package/feeds/qmodem/kmod-qmi_wwan_s/compile V=s
+          make package/feeds/qmodem/kmod-pcie_mhi/compile   V=s
 
       - name: Build QModem userspace packages
         run: |
-          cd ${{ env.SDK_NAME }}
-          make package/qmodem/compile V=s
-          make package/qmodem_monitor/compile V=s
-          make package/tom_modem/compile V=s
-          make package/ubus-at-daemon/compile V=s
-          make package/sms-tool_q/compile V=s
-          make package/sms-forwarder-next/compile V=s
-          make package/quectel_CM_5G_M/compile V=s
-          make package/luci-app-qmodem-next/compile V=s
-          make package/luci-app-qmodem-monitor/compile V=s
+          cd "${{ env.SDK_NAME }}"
+          make package/feeds/qmodem/qmodem/compile             V=s
+          make package/feeds/qmodem/qmodem_monitor/compile     V=s
+          make package/feeds/qmodem/tom_modem/compile          V=s
+          make package/feeds/qmodem/ubus-at-daemon/compile     V=s
+          make package/feeds/qmodem/sms-tool_q/compile         V=s
+          make package/feeds/qmodem/sms-forwarder-next/compile V=s
+          make package/feeds/qmodem/quectel_CM_5G_M/compile    V=s
+          make package/feeds/qmodem/luci-app-qmodem-next/compile    V=s
+          make package/feeds/qmodem/luci-app-qmodem-monitor/compile V=s
 
       - name: Build quectel-timesync
         run: |
-          cd ${{ env.SDK_NAME }}
-          make package/quectel-timesync/compile V=s
+          cd "${{ env.SDK_NAME }}"
+          # These live directly in package/ so no feeds/ prefix needed
+          make package/quectel-timesync/compile          V=s
           make package/luci-app-quectel-timesync/compile V=s
 
       - name: Build mrhaav packages
         run: |
-          cd ${{ env.SDK_NAME }}
-          make package/atc-fib-fm350_gl/compile V=s
-          make package/luci-proto-atc/compile V=s
+          cd "${{ env.SDK_NAME }}"
+          make package/feeds/mrhaavfeed/atc-fib-fm350_gl/compile V=s
+          make package/feeds/mrhaavfeed/luci-proto-atc/compile   V=s
 
       - name: Build Argon theme and config
         run: |
-          cd ${{ env.SDK_NAME }}
-          make package/luci-theme-argon/compile V=s
-          make package/luci-app-argon-config/compile V=s
+          cd "${{ env.SDK_NAME }}"
+          make package/feeds/argonfeed/luci-theme-argon/compile      V=s
+          make package/feeds/argonfeed/luci-app-argon-config/compile V=s
 
-      # --- Collect all IPKs ---
+      # ── Collect all IPKs ──────────────────────────────────────────────────
       - name: Collect all IPKs
         run: |
           mkdir -p ipks
           ARCH="${{ env.ARCH }}"
           SDK_DIR="${{ env.SDK_NAME }}"
 
-          # Vendor kmods
+          # Vendor kmods: may land under bin/targets/ or bin/packages/
           find "$SDK_DIR/bin" \( \
             -name "kmod-qmi_wwan_q_*.ipk" -o \
             -name "kmod-qmi_wwan_f_*.ipk" -o \
@@ -274,21 +316,23 @@ jobs:
             -name "kmod-pcie_mhi_*.ipk"   \
           \) -exec cp {} ipks/ \;
 
-          # QModem userspace from qmodem feed
-          find "$SDK_DIR/bin/packages/$ARCH/qmodem/" -name "*.ipk" \
+          # QModem feed packages
+          find "$SDK_DIR/bin/packages/$ARCH/qmodem/"     -name "*.ipk" \
             -exec cp {} ipks/ \; 2>/dev/null || true
 
-          # Packages that land in base/
-          for pkg in quectel-timesync luci-app-quectel-timesync \
-                     atc-fib-fm350_gl luci-proto-atc \
-                     luci-theme-argon luci-app-argon-config \
-                     qmodem tom_modem quectel-CM-5G-M \
-                     luci-app-qmodem-next luci-app-qmodem-monitor; do
-            find "$SDK_DIR/bin/packages/$ARCH/base/" -name "${pkg}_*.ipk" \
-              -exec cp {} ipks/ \; 2>/dev/null || true
-            find "$SDK_DIR/bin" -name "${pkg}_*.ipk" \
-              -exec cp {} ipks/ \; 2>/dev/null || true
-          done
+          # mrhaav feed packages
+          find "$SDK_DIR/bin/packages/$ARCH/mrhaavfeed/" -name "*.ipk" \
+            -exec cp {} ipks/ \; 2>/dev/null || true
+
+          # argon feed packages
+          find "$SDK_DIR/bin/packages/$ARCH/argonfeed/"  -name "*.ipk" \
+            -exec cp {} ipks/ \; 2>/dev/null || true
+
+          # quectel-timesync (lands in base/ since it's a direct package/)
+          find "$SDK_DIR/bin" -name "quectel-timesync_*.ipk" \
+            -exec cp {} ipks/ \; 2>/dev/null || true
+          find "$SDK_DIR/bin" -name "luci-app-quectel-timesync_*.ipk" \
+            -exec cp {} ipks/ \; 2>/dev/null || true
 
           echo "=== Collected IPKs ==="
           ls -lh ipks/
@@ -300,7 +344,7 @@ jobs:
           name: all-ipks
           path: ipks/*.ipk
 
-  # =======================  RELEASE  =======================================
+  # ======================= RELEASE ===========================================
   release:
     needs: [check-and-build, build-all]
     runs-on: ubuntu-latest
@@ -312,6 +356,11 @@ jobs:
         with:
           name: all-ipks
           path: release-ipks
+
+      - name: Verify IPKs for release
+        run: |
+          echo "=== Files ready to publish ==="
+          ls -lh release-ipks/
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
