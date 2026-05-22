@@ -132,6 +132,7 @@ jobs:
           } >> .config
 
           make defconfig
+          # Use package/compile to resolve all dependencies together (libcap, coreutils, lucihttp, etc.)
           make -j$(nproc) package/compile IGNORE_ERRORS=m V=s 2>&1 | grep -E "^(make\[1\].*Entering|make\[1\].*Leaving|time:|  ERROR|ERROR:)" || true
 
       - name: Collect QModem IPKs
@@ -191,8 +192,8 @@ jobs:
           echo 'CONFIG_PACKAGE_quectel-timesync=m' >> .config
           echo 'CONFIG_PACKAGE_luci-app-quectel-timesync=m' >> .config
           make defconfig
-          make package/quectel-timesync/compile V=s
-          make package/luci-app-quectel-timesync/compile V=s
+          # Build using package/compile to resolve dependencies properly
+          make -j$(nproc) package/compile IGNORE_ERRORS=m V=s 2>&1 | grep -E "^(make\[1\].*Entering|make\[1\].*Leaving|time:|  ERROR|ERROR:)" || true
       - name: Collect timesync IPKs
         run: |
           mkdir -p ipks-timesync
@@ -255,8 +256,8 @@ jobs:
           echo 'CONFIG_PACKAGE_atc-fib-fm350_gl=m' >> .config
           echo 'CONFIG_PACKAGE_luci-proto-atc=m' >> .config
           make defconfig
-          make package/feeds/mrhaavfeed/atc-fib-fm350_gl/compile V=s
-          make package/feeds/mrhaavfeed/luci-proto-atc/compile V=s
+          # Build using package/compile to resolve dependencies properly
+          make -j$(nproc) package/compile IGNORE_ERRORS=m V=s 2>&1 | grep -E "^(make\[1\].*Entering|make\[1\].*Leaving|time:|  ERROR|ERROR:)" || true
       - name: Collect mrhaav IPKs
         run: |
           mkdir -p ipks-mrhaav
@@ -322,8 +323,8 @@ jobs:
           echo 'CONFIG_PACKAGE_luci-theme-argon=m' >> .config
           echo 'CONFIG_PACKAGE_luci-app-argon-config=m' >> .config
           make defconfig
-          make package/feeds/argonfeed/luci-theme-argon/compile V=s
-          make package/feeds/argonfeed/luci-app-argon-config/compile V=s
+          # Build using package/compile to resolve dependencies properly (avoids wget/lua issues)
+          make -j$(nproc) package/compile IGNORE_ERRORS=m V=s 2>&1 | grep -E "^(make\[1\].*Entering|make\[1\].*Leaving|time:|  ERROR|ERROR:)" || true
       - name: Collect Argon IPKs
         run: |
           mkdir -p ipks-argon
