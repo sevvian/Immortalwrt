@@ -262,12 +262,6 @@ jobs:
       #   application/quectel_CM_5G_M → package/feeds/qmodem/quectel_CM_5G_M
       #   luci/luci-app-qmodem-next → package/feeds/qmodem/luci-app-qmodem-next
 
-      - name: Build required dependencies from packages feed
-        run: |
-          cd "${{ env.SDK_NAME }}"
-          # Build libcap first (required by coreutils and other packages)
-          make package/libs/libcap/compile V=s || true
-
       - name: Build vendor kmods
         run: |
           cd "${{ env.SDK_NAME }}"
@@ -276,19 +270,12 @@ jobs:
           make package/feeds/qmodem/simcom_QMI_WWAN/compile  V=s
           make package/feeds/qmodem/quectel_MHI/compile      V=s
 
-      - name: Build QModem userspace packages
+      - name: Build QModem userspace packages (with automatic dependency resolution)
         run: |
           cd "${{ env.SDK_NAME }}"
-          make package/feeds/packages/coreutils/compile V=s || true
-          make package/feeds/qmodem/qmodem/compile               V=s
-          make package/feeds/qmodem/qmodem_monitor/compile       V=s
-          make package/feeds/qmodem/tom_modem/compile            V=s
-          make package/feeds/qmodem/ubus_at_daemon/compile       V=s
-          make package/feeds/qmodem/sms-tool_q/compile           V=s
-          make package/feeds/qmodem/sms_forwarder_next/compile   V=s
-          make package/feeds/qmodem/quectel_CM_5G_M/compile      V=s
-          make package/feeds/qmodem/luci-app-qmodem-next/compile    V=s
-          make package/feeds/qmodem/luci-app-qmodem-monitor/compile V=s
+          # Build all qmodem feed packages together - this ensures libcap/coreutils
+          # and other cross-feed dependencies are built in correct order
+          make package/feeds/qmodem/compile V=s
 
       - name: Build quectel-timesync
         run: |
