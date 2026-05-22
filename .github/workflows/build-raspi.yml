@@ -1,4 +1,4 @@
-name: v3 combined for raspi ImmortalWrt 24.10.6 (bcm2711/aarch64)
+name: V3 Combined for raspi4b for ImmortalWrt 24.10.6 (bcm2711/aarch64)
 
 on:
   workflow_dispatch:
@@ -98,7 +98,8 @@ jobs:
       - name: Download & extract SDK (24.10.6)
         if: steps.cache-sdk.outputs.cache-hit != 'true'
         run: |
-          wget -q "${{ env.SDK_URL }}"
+          SDK_URL="${{ env.SDK_URL }}"
+          wget -q "$SDK_URL"
           tar --zstd -xf "${{ env.SDK_TAR }}"
 
       - name: Set up feeds (QModem + essential ImmortalWrt feeds)
@@ -132,7 +133,15 @@ jobs:
           echo "# CONFIG_PACKAGE_quectel_MHI is not set" >> .config
           echo "# CONFIG_PACKAGE_fibocom_MHI is not set" >> .config
           echo "# CONFIG_PACKAGE_simcom_MHI is not set" >> .config
+          
+          # Force compile critical dependency for luci-base (lua.h)
+          echo "CONFIG_PACKAGE_liblua=y" >> .config
+          
           make defconfig
+          
+          # Compile dependencies first to resolve missing header checks in lucihttp
+          make package/lua/compile V=s -j$(nproc) || make package/lua/compile V=s
+          
           make package/luci-app-qmodem-next/compile V=s
           make package/luci-app-qmodem-monitor/compile V=s
 
@@ -198,7 +207,8 @@ jobs:
       - name: Download & extract SDK (24.10.6)
         if: steps.cache-sdk.outputs.cache-hit != 'true'
         run: |
-          wget -q "${{ env.SDK_URL }}"
+          SDK_URL="${{ env.SDK_URL }}"
+          wget -q "$SDK_URL"
           tar --zstd -xf "${{ env.SDK_TAR }}"
 
       # Copy packages directly into SDK package/ tree (no custom feed needed).
@@ -277,7 +287,8 @@ jobs:
       - name: Download & extract SDK (24.10.6)
         if: steps.cache-sdk.outputs.cache-hit != 'true'
         run: |
-          wget -q "${{ env.SDK_URL }}"
+          SDK_URL="${{ env.SDK_URL }}"
+          wget -q "$SDK_URL"
           tar --zstd -xf "${{ env.SDK_TAR }}"
 
       # Build a proper feed directory (one sub-dir per package) then src-link it.
@@ -367,7 +378,8 @@ jobs:
       - name: Download & extract SDK (24.10.6)
         if: steps.cache-sdk.outputs.cache-hit != 'true'
         run: |
-          wget -q "${{ env.SDK_URL }}"
+          SDK_URL="${{ env.SDK_URL }}"
+          wget -q "$SDK_URL"
           tar --zstd -xf "${{ env.SDK_TAR }}"
 
       - name: Create proper feed directory structure
@@ -397,7 +409,17 @@ jobs:
           cd "$SDK_DIR"
           echo "CONFIG_PACKAGE_luci-theme-argon=m" >> .config
           echo "CONFIG_PACKAGE_luci-app-argon-config=m" >> .config
+          
+          # Force compile critical dependency for wget-ssl
+          echo "CONFIG_PACKAGE_libopenssl=y" >> .config
+          echo "CONFIG_PACKAGE_wget-ssl=y" >> .config
+          
           make defconfig
+          
+          # Compile openssl and wget first to resolve missing header checks in wget-ssl
+          make package/openssl/compile V=s -j$(nproc) || make package/openssl/compile V=s
+          make package/wget/compile V=s -j$(nproc) || make package/wget/compile V=s
+          
           make package/feeds/argonfeed/luci-theme-argon/compile V=s
           make package/feeds/argonfeed/luci-app-argon-config/compile V=s
 
