@@ -136,134 +136,210 @@ jobs:
           tar --zstd -xf "${{ env.SDK_TAR }}"
           rm -f "${{ env.SDK_TAR }}"
 
-      # ── Prepare feed directories for mrhaav and argon ────────────────────
-      # Each src-link feed directory must contain one sub-directory per package.
-      # quectel-timesync goes directly into SDK package/ (not a feed).
-      - name: Create feed directory structures
-        run: |
-          # mrhaav: one sub-directory per package inside mrhaavfeed/
-          mkdir -p mrhaavfeed/atc-fib-fm350_gl
-          mkdir -p mrhaavfeed/luci-proto-atc
-          cp -r mrhaav-source/atc-fib-fm350_gl/*              mrhaavfeed/atc-fib-fm350_gl/
-          cp -r mrhaav-source/luci/protocols/luci-proto-atc/* mrhaavfeed/luci-proto-atc/
-
-          # argon: one sub-directory per package inside argonfeed/
-          mkdir -p argonfeed/luci-theme-argon
-          mkdir -p argonfeed/luci-app-argon-config
-          cp -r argon-theme-source/*  argonfeed/luci-theme-argon/
-          cp -r argon-config-source/* argonfeed/luci-app-argon-config/
-
-          # quectel-timesync: place directly into SDK package/ tree
-          cp -r quectel-source/openwrt/quectel-timesync     "${{ env.SDK_NAME }}/package/quectel-timesync"
-          cp -r quectel-source/luci-app-quectel-timesync    "${{ env.SDK_NAME }}/package/luci-app-quectel-timesync"
-
-      # ── Feeds ─────────────────────────────────────────────────────────────
-      - name: Set up feeds and remove diskman
+      # ── STEP 1: Build QModem vendor kmods first (isolated) ────────────────
+      - name: Step 1 - Configure and build QModem vendor kmods
         run: |
           cd "${{ env.SDK_NAME }}"
           rm -rf feeds/base
           rm -f feeds.conf feeds.conf.default
-
-          # QModem: the repo root IS the feed (feeds scans recursively for Makefiles)
+          
+          # QModem feed only for kmods
           printf '%s\n' "src-link qmodem     ${{ github.workspace }}/qmodem-source"                     >> feeds.conf.default
-          printf '%s\n' "src-link mrhaavfeed ${{ github.workspace }}/mrhaavfeed"                         >> feeds.conf.default
-          printf '%s\n' "src-link argonfeed  ${{ github.workspace }}/argonfeed"                          >> feeds.conf.default
           printf '%s\n' "src-git  luci       https://github.com/immortalwrt/luci.git;openwrt-24.10"     >> feeds.conf.default
           printf '%s\n' "src-git  packages   https://github.com/immortalwrt/packages.git;openwrt-24.10" >> feeds.conf.default
-
+          
           ./scripts/feeds update -a
-
-          # Remove diskman AFTER update but BEFORE install to break circular dep
           rm -rf feeds/luci/applications/luci-app-diskman
-
           ./scripts/feeds install -a
-
-          echo "=== qmodem feed symlinks ==="
-          ls package/feeds/qmodem/ | sort
-
-      # ── .config ───────────────────────────────────────────────────────────
-      # Use only echo statements — no heredoc — to avoid column-0 content
-      # breaking the YAML literal block scalar and corrupting the on: trigger.
-      - name: Configure build
-        run: |
-          cd "${{ env.SDK_NAME }}"
-
+          
+          # Configure ONLY vendor kmods
           echo 'CONFIG_ALL=n'       > .config
           echo 'CONFIG_ALL_KMODS=n' >> .config
           echo 'CONFIG_DEVEL=y'     >> .config
-
-          # Enable libcap in SDK (required by coreutils and other packages)
-          # This ensures libcap is built as a dependency when needed
-          echo 'CONFIG_PACKAGE_libcap=y' >> .config
-          echo 'CONFIG_LIBCAP_STATIC=n' >> .config
-
-          # Kernel USB stubs (required by vendor kmod DEPENDS)
+          
+          # Kernel USB stubs
           echo 'CONFIG_PACKAGE_kmod-usb-core=m' >> .config
           echo 'CONFIG_PACKAGE_kmod-usb-net=m'  >> .config
           echo 'CONFIG_PACKAGE_kmod-usb-wdm=m'  >> .config
           echo 'CONFIG_PACKAGE_kmod-mii=m'      >> .config
-
-          # QModem vendor kernel modules
-          # CONFIG symbol = kmod-<KernelPackage/NAME> from each driver Makefile
+          
+          # QModem vendor kernel modules ONLY
           echo 'CONFIG_PACKAGE_kmod-qmi_wwan_q=m' >> .config
           echo 'CONFIG_PACKAGE_kmod-qmi_wwan_f=m' >> .config
           echo 'CONFIG_PACKAGE_kmod-qmi_wwan_s=m' >> .config
           echo 'CONFIG_PACKAGE_kmod-pcie_mhi=m'   >> .config
+          
+          make defconfig
+          
+          # Build only the kmods
+          make -j$(nproc) package/kernel/linux/compile IGNORE_ERRORS=m V=s 2>&1 | \
+            grep -E "^(make\[1\].*Entering|make\[1\].*Leaving|time:|  ERROR|ERROR:)" || true
+          
+          echo "=== Kmods built ==="
+          find bin/ -name "kmod-qmi_wwan_*.ipk" -o -name "kmod-pcie_mhi_*.ipk" | sort
 
-          # QModem core userspace (PKG_NAME values from application/*/Makefile)
+      # ── STEP 2: Build QModem userspace packages (with full deps) ──────────
+      - name: Step 2 - Configure and build QModem userspace packages
+        run: |
+          cd "${{ env.SDK_NAME }}"
+          rm -rf feeds/base
+          rm -f feeds.conf feeds.conf.default
+          
+          # QModem feed for userspace
+          printf '%s\n' "src-link qmodem     ${{ github.workspace }}/qmodem-source"                     >> feeds.conf.default
+          printf '%s\n' "src-git  luci       https://github.com/immortalwrt/luci.git;openwrt-24.10"     >> feeds.conf.default
+          printf '%s\n' "src-git  packages   https://github.com/immortalwrt/packages.git;openwrt-24.10" >> feeds.conf.default
+          
+          ./scripts/feeds update -a
+          rm -rf feeds/luci/applications/luci-app-diskman
+          ./scripts/feeds install -a
+          
+          # Configure QModem userspace
+          echo 'CONFIG_ALL=n'       > .config
+          echo 'CONFIG_ALL_KMODS=n' >> .config
+          echo 'CONFIG_DEVEL=y'     >> .config
+          
+          # QModem core userspace packages
           echo 'CONFIG_PACKAGE_qmodem=m'           >> .config
           echo 'CONFIG_PACKAGE_qmodem_monitor=m'   >> .config
           echo 'CONFIG_PACKAGE_tom_modem=m'        >> .config
           echo 'CONFIG_PACKAGE_ubus-at-daemon=m'   >> .config
           echo 'CONFIG_PACKAGE_sms-tool_q=m'       >> .config
           echo 'CONFIG_PACKAGE_sms-forwarder-next=m' >> .config
-          # PKG_NAME in application/quectel_CM_5G_M/Makefile is "quectel-CM-5G-M" (hyphens)
           echo 'CONFIG_PACKAGE_quectel-CM-5G-M=m'  >> .config
-
-          # QModem feature-flag symbols (conditional DEPENDS gates in luci-app-qmodem)
+          
+          # Feature flags
           echo 'CONFIG_PACKAGE_luci-app-qmodem_INCLUDE_vendor-qmi-wwan=y'       >> .config
           echo 'CONFIG_PACKAGE_luci-app-qmodem_VENDOR_MHI_PCIe_DRIVER=y'        >> .config
           echo 'CONFIG_PACKAGE_luci-app-qmodem_USE_TOM_CUSTOMIZED_QUECTEL_CM=y' >> .config
           echo 'CONFIG_PACKAGE_luci-app-qmodem_INCLUDE_ndisc6=y'                >> .config
-
-          # QModem LuCI frontends (from luci/luci-app-qmodem-*/Makefile)
+          
+          # LuCI frontends
           echo 'CONFIG_PACKAGE_luci-app-qmodem-next=m'    >> .config
           echo 'CONFIG_PACKAGE_luci-app-qmodem-monitor=m' >> .config
-
-          # quectel-timesync (lives directly in package/ - not a feed)
-          echo 'CONFIG_PACKAGE_quectel-timesync=m'          >> .config
-          echo 'CONFIG_PACKAGE_luci-app-quectel-timesync=m' >> .config
-
-          # mrhaav packages (via mrhaavfeed)
-          echo 'CONFIG_PACKAGE_atc-fib-fm350_gl=m' >> .config
-          echo 'CONFIG_PACKAGE_luci-proto-atc=m'   >> .config
-
-          # Argon packages (via argonfeed)
-          echo 'CONFIG_PACKAGE_luci-theme-argon=m'      >> .config
-          echo 'CONFIG_PACKAGE_luci-app-argon-config=m' >> .config
-
+          
           make defconfig
+          
+          # Build ALL selected (OpenWrt resolves deps: libcap→coreutils→qmodem)
+          make -j$(nproc) package/compile IGNORE_ERRORS=m V=s 2>&1 | \
+            grep -E "^(make\[1\].*Entering|make\[1\].*Leaving|time:|  ERROR|ERROR:)" || true
+          
+          echo "=== QModem userspace built ==="
+          find bin/packages/ -path "*/qmodem/*.ipk" | sort
 
-          echo "=== FINAL CONFIG CHECK ==="
-          grep -E "^CONFIG_PACKAGE_(kmod-|qmodem|tom_modem|ubus-at|sms-|quectel|luci-app-qmodem|luci-theme-argon|luci-app-argon|atc-fib|luci-proto)" \
-               .config | sort
-
-      # ── Build steps ───────────────────────────────────────────────────────
-      # IMPORTANT: We use a SINGLE `make package/compile` command to build ALL
-      # selected packages. This lets OpenWrt's build system resolve the complete
-      # dependency graph in the correct order (e.g., libcap → coreutils → others).
-      # Building packages individually causes dependency failures like the libcap error.
-      #
-      # This approach mirrors the working build-qmodem-timesync-test.yml workflow.
-
-      - name: Build all selected packages (single command resolves all deps)
+      # ── STEP 3: Build quectel-timesync (isolated) ─────────────────────────
+      - name: Step 3 - Configure and build quectel-timesync
         run: |
           cd "${{ env.SDK_NAME }}"
-          # Build EVERYTHING selected in .config in one command
-          # OpenWrt will automatically build dependencies in correct order:
-          # libcap first, then coreutils, then qmodem/kmods/etc.
-          make -j$(nproc) package/compile IGNORE_ERRORS=m V=s 2>&1 | \
-            grep -E "^(make[1].*Entering|make[1].*Leaving|time:|  ERROR|ERROR:)" || true
+          rm -rf feeds/base
+          rm -f feeds.conf feeds.conf.default
+          
+          # Copy timesync packages directly
+          cp -r "${{ github.workspace }}/quectel-source/openwrt/quectel-timesync" package/quectel-timesync
+          cp -r "${{ github.workspace }}/quectel-source/luci-app-quectel-timesync" package/luci-app-quectel-timesync
+          
+          # Standard feeds only
+          printf '%s\n' "src-git  luci       https://github.com/immortalwrt/luci.git;openwrt-24.10"     >> feeds.conf.default
+          printf '%s\n' "src-git  packages   https://github.com/immortalwrt/packages.git;openwrt-24.10" >> feeds.conf.default
+          
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+          
+          # Configure timesync
+          echo 'CONFIG_ALL=n'       > .config
+          echo 'CONFIG_ALL_KMODS=n' >> .config
+          echo 'CONFIG_DEVEL=y'     >> .config
+          echo 'CONFIG_PACKAGE_quectel-timesync=m'          >> .config
+          echo 'CONFIG_PACKAGE_luci-app-quectel-timesync=m' >> .config
+          
+          make defconfig
+          
+          # Build timesync packages
+          make package/quectel-timesync/compile IGNORE_ERRORS=m V=s 2>&1 | \
+            grep -E "^(make\[1\].*Entering|make\[1\].*Leaving|time:|  ERROR|ERROR:)" || true
+          make package/luci-app-quectel-timesync/compile IGNORE_ERRORS=m V=s 2>&1 | \
+            grep -E "^(make\[1\].*Entering|make\[1\].*Leaving|time:|  ERROR|ERROR:)" || true
+          
+          echo "=== Timesync built ==="
+          find bin/ -name "*quectel-timesync*.ipk" | sort
+
+      # ── STEP 4: Build mrhaav packages (isolated) ──────────────────────────
+      - name: Step 4 - Configure and build mrhaav packages
+        run: |
+          cd "${{ env.SDK_NAME }}"
+          rm -rf feeds/base
+          rm -f feeds.conf feeds.conf.default
+          
+          # Create mrhaav feed structure
+          mkdir -p mrhaavfeed/atc-fib-fm350_gl
+          mkdir -p mrhaavfeed/luci-proto-atc
+          cp -r "${{ github.workspace }}/mrhaav-source/atc-fib-fm350_gl/"* mrhaavfeed/atc-fib-fm350_gl/
+          cp -r "${{ github.workspace }}/mrhaav-source/luci/protocols/luci-proto-atc/"* mrhaavfeed/luci-proto-atc/
+          
+          # Feeds with mrhaav
+          printf '%s\n' "src-link mrhaavfeed ${{ github.workspace }}/mrhaavfeed"                         >> feeds.conf.default
+          printf '%s\n' "src-git  luci       https://github.com/immortalwrt/luci.git;openwrt-24.10"     >> feeds.conf.default
+          printf '%s\n' "src-git  packages   https://github.com/immortalwrt/packages.git;openwrt-24.10" >> feeds.conf.default
+          
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+          
+          # Configure mrhaav packages
+          echo 'CONFIG_ALL=n'       > .config
+          echo 'CONFIG_ALL_KMODS=n' >> .config
+          echo 'CONFIG_DEVEL=y'     >> .config
+          echo 'CONFIG_PACKAGE_atc-fib-fm350_gl=m' >> .config
+          echo 'CONFIG_PACKAGE_luci-proto-atc=m'   >> .config
+          
+          make defconfig
+          
+          # Build mrhaav packages
+          make package/feeds/mrhaavfeed/atc-fib-fm350_gl/compile IGNORE_ERRORS=m V=s 2>&1 | \
+            grep -E "^(make\[1\].*Entering|make\[1\].*Leaving|time:|  ERROR|ERROR:)" || true
+          make package/feeds/mrhaavfeed/luci-proto-atc/compile IGNORE_ERRORS=m V=s 2>&1 | \
+            grep -E "^(make\[1\].*Entering|make\[1\].*Leaving|time:|  ERROR|ERROR:)" || true
+          
+          echo "=== Mrhaav packages built ==="
+          find bin/packages/ -path "*/mrhaavfeed/*.ipk" | sort
+
+      # ── STEP 5: Build Argon theme (isolated) ──────────────────────────────
+      - name: Step 5 - Configure and build Argon theme
+        run: |
+          cd "${{ env.SDK_NAME }}"
+          rm -rf feeds/base
+          rm -f feeds.conf feeds.conf.default
+          
+          # Create argon feed structure
+          mkdir -p argonfeed/luci-theme-argon
+          mkdir -p argonfeed/luci-app-argon-config
+          cp -r "${{ github.workspace }}/argon-theme-source/"* argonfeed/luci-theme-argon/
+          cp -r "${{ github.workspace }}/argon-config-source/"* argonfeed/luci-app-argon-config/
+          
+          # Feeds with argon
+          printf '%s\n' "src-link argonfeed  ${{ github.workspace }}/argonfeed"                          >> feeds.conf.default
+          printf '%s\n' "src-git  luci       https://github.com/immortalwrt/luci.git;openwrt-24.10"     >> feeds.conf.default
+          printf '%s\n' "src-git  packages   https://github.com/immortalwrt/packages.git;openwrt-24.10" >> feeds.conf.default
+          
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+          
+          # Configure argon
+          echo 'CONFIG_ALL=n'       > .config
+          echo 'CONFIG_ALL_KMODS=n' >> .config
+          echo 'CONFIG_DEVEL=y'     >> .config
+          echo 'CONFIG_PACKAGE_luci-theme-argon=m'      >> .config
+          echo 'CONFIG_PACKAGE_luci-app-argon-config=m' >> .config
+          
+          make defconfig
+          
+          # Build argon packages
+          make package/feeds/argonfeed/luci-theme-argon/compile IGNORE_ERRORS=m V=s 2>&1 | \
+            grep -E "^(make\[1\].*Entering|make\[1\].*Leaving|time:|  ERROR|ERROR:)" || true
+          make package/feeds/argonfeed/luci-app-argon-config/compile IGNORE_ERRORS=m V=s 2>&1 | \
+            grep -E "^(make\[1\].*Entering|make\[1\].*Leaving|time:|  ERROR|ERROR:)" || true
+          
+          echo "=== Argon theme built ==="
+          find bin/packages/ -path "*/argonfeed/*.ipk" | sort
 
       # ── Collect all IPKs ──────────────────────────────────────────────────
       - name: Collect all IPKs
