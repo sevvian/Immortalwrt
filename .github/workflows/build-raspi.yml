@@ -1,4 +1,4 @@
-name: V3 combined raspi4b for ImmortalWrt 24.10.6 (bcm2711/aarch64)
+name: V3 combined for raspi4B ImmortalWrt 24.10.6 (bcm2711/aarch64)
 
 on:
   workflow_dispatch:
@@ -93,7 +93,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: immortalwrt-sdk-*
-          key: sdk-bcm2711-24.10.6-v1
+          key: sdk-bcm2711-24.10.6-v3
 
       - name: Download & extract SDK (24.10.6)
         if: steps.cache-sdk.outputs.cache-hit != 'true'
@@ -102,28 +102,12 @@ jobs:
           wget -q "$SDK_URL"
           tar --zstd -xf "${{ env.SDK_TAR }}"
 
-      # Copy core development headers from host to the SDK target staging include area
-      - name: Populate SDK staging headers from host
-        run: |
-          SDK_DIR=$(ls -d immortalwrt-sdk-* | head -1)
-          cd "$SDK_DIR"
-          STAGING_USR_INCLUDE=$(find staging_dir/ -type d -path "staging_dir/target-*/usr/include" | head -1)
-          if [ -n "$STAGING_USR_INCLUDE" ]; then
-            echo "Populating headers into $STAGING_USR_INCLUDE"
-            sudo apt-get update && sudo apt-get install -y liblua5.1-0-dev libssl-dev
-            cp -r /usr/include/lua5.1/* "$STAGING_USR_INCLUDE/" || true
-            cp -r /usr/include/openssl "$STAGING_USR_INCLUDE/" || true
-          fi
-
       - name: Set up feeds (QModem + essential ImmortalWrt feeds)
         run: |
           SDK_DIR=$(ls -d immortalwrt-sdk-* | head -1)
           cd "$SDK_DIR"
-          rm -rf feeds/base
-          rm -f feeds.conf feeds.conf.default
-          printf '%s\n' "src-link qmodem ${{ github.workspace }}/qmodem-source" >> feeds.conf.default
-          printf '%s\n' "src-git luci https://github.com/immortalwrt/luci.git;openwrt-24.10" >> feeds.conf.default
-          printf '%s\n' "src-git packages https://github.com/immortalwrt/packages.git;openwrt-24.10" >> feeds.conf.default
+          # Only append custom feed to pre-shipped feeds.conf.default to keep base feed dependencies intact
+          echo "src-link qmodem ${{ github.workspace }}/qmodem-source" >> feeds.conf.default
           ./scripts/feeds update -a
           # WORKAROUND: remove conflicting package that causes circular deps
           rm -rf feeds/luci/applications/luci-app-diskman
@@ -207,7 +191,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: immortalwrt-sdk-*
-          key: sdk-bcm2711-24.10.6-v1
+          key: sdk-bcm2711-24.10.6-v3
 
       - name: Download & extract SDK (24.10.6)
         if: steps.cache-sdk.outputs.cache-hit != 'true'
@@ -287,7 +271,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: immortalwrt-sdk-*
-          key: sdk-bcm2711-24.10.6-v1
+          key: sdk-bcm2711-24.10.6-v3
 
       - name: Download & extract SDK (24.10.6)
         if: steps.cache-sdk.outputs.cache-hit != 'true'
@@ -378,7 +362,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: immortalwrt-sdk-*
-          key: sdk-bcm2711-24.10.6-v1
+          key: sdk-bcm2711-24.10.6-v3
 
       - name: Download & extract SDK (24.10.6)
         if: steps.cache-sdk.outputs.cache-hit != 'true'
@@ -386,18 +370,6 @@ jobs:
           SDK_URL="${{ env.SDK_URL }}"
           wget -q "$SDK_URL"
           tar --zstd -xf "${{ env.SDK_TAR }}"
-
-      # Copy core development headers from host to the SDK target staging include area
-      - name: Populate SDK staging headers from host
-        run: |
-          SDK_DIR=$(ls -d immortalwrt-sdk-* | head -1)
-          cd "$SDK_DIR"
-          STAGING_USR_INCLUDE=$(find staging_dir/ -type d -path "staging_dir/target-*/usr/include" | head -1)
-          if [ -n "$STAGING_USR_INCLUDE" ]; then
-            echo "Populating headers into $STAGING_USR_INCLUDE"
-            sudo apt-get update && sudo apt-get install -y libssl-dev
-            cp -r /usr/include/openssl "$STAGING_USR_INCLUDE/" || true
-          fi
 
       - name: Create proper feed directory structure
         run: |
@@ -410,11 +382,8 @@ jobs:
         run: |
           SDK_DIR=$(ls -d immortalwrt-sdk-* | head -1)
           cd "$SDK_DIR"
-          rm -rf feeds/base
-          rm -f feeds.conf feeds.conf.default
-          printf '%s\n' "src-link argonfeed ${{ github.workspace }}/argonfeed"                       >> feeds.conf.default
-          printf '%s\n' "src-git  luci     https://github.com/immortalwrt/luci.git;openwrt-24.10"    >> feeds.conf.default
-          printf '%s\n' "src-git  packages https://github.com/immortalwrt/packages.git;openwrt-24.10" >> feeds.conf.default
+          # Only append custom feed to pre-shipped feeds.conf.default to keep base feed dependencies intact
+          echo "src-link argonfeed ${{ github.workspace }}/argonfeed" >> feeds.conf.default
           ./scripts/feeds update -a
           # WORKAROUND: remove conflicting package that causes circular deps
           rm -rf feeds/luci/applications/luci-app-diskman
