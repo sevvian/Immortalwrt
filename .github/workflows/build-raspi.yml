@@ -382,8 +382,11 @@ jobs:
         run: |
           SDK_DIR=$(ls -d immortalwrt-sdk-* | head -1)
           cd "$SDK_DIR"
-          # Only append custom feed to pre-shipped feeds.conf.default to keep base feed dependencies intact
-          echo "src-link argonfeed ${{ github.workspace }}/argonfeed" >> feeds.conf.default
+          rm -rf feeds/base
+          rm -f feeds.conf feeds.conf.default
+          printf '%s\n' "src-link argonfeed ${{ github.workspace }}/argonfeed"                       >> feeds.conf.default
+          printf '%s\n' "src-git  luci     https://github.com/immortalwrt/luci.git;openwrt-24.10"    >> feeds.conf.default
+          printf '%s\n' "src-git  packages https://github.com/immortalwrt/packages.git;openwrt-24.10" >> feeds.conf.default
           ./scripts/feeds update -a
           # WORKAROUND: remove conflicting package that causes circular deps
           rm -rf feeds/luci/applications/luci-app-diskman
