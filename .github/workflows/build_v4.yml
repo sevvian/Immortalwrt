@@ -394,36 +394,19 @@ jobs:
           path: immortalwrt-sdk-*
           key: sdk-bcm2711-24.10.6-prepared-v1
 
-      - name: Download & extract SDK (24.10.6)
-        if: steps.cache-sdk.outputs.cache-hit != 'true'
-        run: |
-          SDK_URL="${{ env.SDK_URL }}"
-          wget -q "$SDK_URL"
-          tar --zstd -xf "${{ env.SDK_TAR }}"
-
-      - name: Create proper feed directory structure
-        run: |
-          mkdir -p argonfeed/luci-theme-argon
-          mkdir -p argonfeed/luci-app-argon-config
-          cp -r argon-theme-source/*  argonfeed/luci-theme-argon/
-          cp -r argon-config-source/* argonfeed/luci-app-argon-config/
-
-      # Exactly matching the working MVEBU feed configuration step
-      - name: Set up feeds (argon feed + essential ImmortalWrt)
+      # Copy packages directly into SDK package/ directory matching local package standards (no custom feed needed)
+      - name: Copy packages into SDK and set up feeds
         run: |
           SDK_DIR=$(ls -d immortalwrt-sdk-* | head -1)
+          cp -r argon-theme-source "$SDK_DIR/package/luci-theme-argon"
+          cp -r argon-config-source "$SDK_DIR/package/luci-app-argon-config"
           cd "$SDK_DIR"
-          rm -rf feeds/base
-          rm -f feeds.conf feeds.conf.default
-          printf '%s\n' "src-link argonfeed ${{ github.workspace }}/argonfeed"                       >> feeds.conf.default
-          printf '%s\n' "src-git  luci     https://github.com/immortalwrt/luci.git;openwrt-24.10"    >> feeds.conf.default
-          printf '%s\n' "src-git  packages https://github.com/immortalwrt/packages.git;openwrt-24.10" >> feeds.conf.default
           ./scripts/feeds update -a
           # WORKAROUND: remove conflicting package that causes circular deps
           rm -rf feeds/luci/applications/luci-app-diskman
           ./scripts/feeds install -a
 
-      # Exactly matching the working MVEBU compilation step
+      # Standard build targets for direct packages
       - name: Build packages
         run: |
           SDK_DIR=$(ls -d immortalwrt-sdk-* | head -1)
@@ -431,15 +414,16 @@ jobs:
           echo "CONFIG_PACKAGE_luci-theme-argon=m" >> .config
           echo "CONFIG_PACKAGE_luci-app-argon-config=m" >> .config
           make defconfig
-          make package/feeds/argonfeed/luci-theme-argon/compile V=s
-          make package/feeds/argonfeed/luci-app-argon-config/compile V=s
+          make package/luci-theme-argon/compile V=s
+          make package/luci-app-argon-config/compile V=s
 
       - name: Collect Argon IPKs
         run: |
           mkdir -p ipks-argon
           SDK_DIR=$(ls -d immortalwrt-sdk-* | head -1)
           ARCH="${{ env.ARCH }}"
-          cp "$SDK_DIR/bin/packages/$ARCH/argonfeed/"*.ipk ipks-argon/ 2>/dev/null || true
+          cp "$SDK_DIR/bin/packages/$ARCH/base/"luci-theme-argon_*.ipk ipks-argon/ 2>/dev/null || true
+          cp "$SDK_DIR/bin/packages/$ARCH/base/"luci-app-argon-config_*.ipk ipks-argon/ 2>/dev/null || true
           find "$SDK_DIR/bin" -name "luci-theme-argon_*.ipk" -o -name "luci-app-argon-config_*.ipk" | xargs -I{} cp {} ipks-argon/ 2>/dev/null || true
           
           echo "=== Collected Argon IPKs ==="
