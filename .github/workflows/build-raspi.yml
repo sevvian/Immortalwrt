@@ -66,9 +66,62 @@ jobs:
             echo "upstream_sha=$LATEST_SHA" >> "$GITHUB_OUTPUT"
           fi
 
-  # ── 1. QModem: kmod vendor IPKs + all userspace packages ────────────────────
-  build-qmodem:
+  # ── 1. Sequential SDK Preparation Stage ─────────────────────────────────────
+  prepare-sdk:
     needs: check-and-build
+    if: needs.check-and-build.outputs.build_needed == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Prepare build environment
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential clang flex bison g++ gawk \
+            gcc-multilib g++-multilib gettext git \
+            libncurses-dev libssl-dev python3-dev python3-setuptools \
+            rsync unzip zlib1g-dev file wget zstd
+
+      - name: Restore SDK cache
+        id: cache-sdk
+        uses: actions/cache@v4
+        with:
+          path: immortalwrt-sdk-*
+          key: sdk-bcm2711-24.10.6-prepared-v1
+
+      - name: Download & extract SDK (24.10.6)
+        if: steps.cache-sdk.outputs.cache-hit != 'true'
+        run: |
+          SDK_URL="${{ env.SDK_URL }}"
+          wget -q "$SDK_URL"
+          tar --zstd -xf "${{ env.SDK_TAR }}"
+
+      # Populate headers from host to target staging to bypass dependency compile crashes (lua.h and des.h)
+      - name: Populate SDK staging headers from host
+        if: steps.cache-sdk.outputs.cache-hit != 'true'
+        run: |
+          SDK_DIR=$(ls -d immortalwrt-sdk-* | head -1)
+          cd "$SDK_DIR"
+          STAGING_USR_INCLUDE=$(find staging_dir/ -type d -path "staging_dir/target-*/usr/include" | head -1)
+          if [ -n "$STAGING_USR_INCLUDE" ]; then
+            echo "Populating headers into $STAGING_USR_INCLUDE"
+            sudo apt-get update && sudo apt-get install -y liblua5.1-0-dev libssl-dev
+            cp -r /usr/include/lua5.1/* "$STAGING_USR_INCLUDE/" || true
+            cp -r /usr/include/openssl "$STAGING_USR_INCLUDE/" || true
+          fi
+
+      - name: Set up base feeds
+        if: steps.cache-sdk.outputs.cache-hit != 'true'
+        run: |
+          SDK_DIR=$(ls -d immortalwrt-sdk-* | head -1)
+          cd "$SDK_DIR"
+          ./scripts/feeds update -a
+          # WORKAROUND: remove conflicting package that causes circular deps
+          rm -rf feeds/luci/applications/luci-app-diskman
+          ./scripts/feeds install -a
+
+  # ── 2. QModem: kmod vendor IPKs + all userspace packages ────────────────────
+  build-qmodem:
+    needs: [check-and-build, prepare-sdk]
     if: needs.check-and-build.outputs.build_needed == 'true'
     runs-on: ubuntu-latest
     steps:
@@ -93,25 +146,16 @@ jobs:
         uses: actions/cache@v4
         with:
           path: immortalwrt-sdk-*
-          key: sdk-bcm2711-24.10.6-v3
-
-      - name: Download & extract SDK (24.10.6)
-        if: steps.cache-sdk.outputs.cache-hit != 'true'
-        run: |
-          SDK_URL="${{ env.SDK_URL }}"
-          wget -q "$SDK_URL"
-          tar --zstd -xf "${{ env.SDK_TAR }}"
+          key: sdk-bcm2711-24.10.6-prepared-v1
 
       - name: Set up feeds (QModem + essential ImmortalWrt feeds)
         run: |
           SDK_DIR=$(ls -d immortalwrt-sdk-* | head -1)
           cd "$SDK_DIR"
-          # Only append custom feed to pre-shipped feeds.conf.default to keep base feed dependencies intact
+          # Link our checked out QModem workspace into the pre-shipped SDK feeds
           echo "src-link qmodem ${{ github.workspace }}/qmodem-source" >> feeds.conf.default
-          ./scripts/feeds update -a
-          # WORKAROUND: remove conflicting package that causes circular deps
-          rm -rf feeds/luci/applications/luci-app-diskman
-          ./scripts/feeds install -a
+          ./scripts/feeds update qmodem
+          ./scripts/feeds install -a -p qmodem
 
       - name: Configure and build QModem packages
         run: |
@@ -164,9 +208,9 @@ jobs:
           name: qmodem-ipks
           path: ipks-qmodem/*.ipk
 
-  # ── 2. quectel-timesync ──────────────────────────────────────────────────────
+  # ── 3. quectel-timesync ──────────────────────────────────────────────────────
   build-timesync:
-    needs: check-and-build
+    needs: [check-and-build, prepare-sdk]
     if: needs.check-and-build.outputs.build_needed == 'true'
     runs-on: ubuntu-latest
     steps:
@@ -191,27 +235,14 @@ jobs:
         uses: actions/cache@v4
         with:
           path: immortalwrt-sdk-*
-          key: sdk-bcm2711-24.10.6-v3
-
-      - name: Download & extract SDK (24.10.6)
-        if: steps.cache-sdk.outputs.cache-hit != 'true'
-        run: |
-          SDK_URL="${{ env.SDK_URL }}"
-          wget -q "$SDK_URL"
-          tar --zstd -xf "${{ env.SDK_TAR }}"
+          key: sdk-bcm2711-24.10.6-prepared-v1
 
       # Copy packages directly into SDK package/ tree (no custom feed needed).
-      # Only remove feeds/base so the SDK's own feeds.conf.default is preserved —
-      # this is what allows ./scripts/feeds update -a to resolve luci etc.
       - name: Copy packages into SDK and set up feeds
         run: |
           SDK_DIR=$(ls -d immortalwrt-sdk-* | head -1)
           cp -r quectel-source/openwrt/quectel-timesync "$SDK_DIR/package/quectel-timesync"
           cp -r quectel-source/luci-app-quectel-timesync "$SDK_DIR/package/luci-app-quectel-timesync"
-          cd "$SDK_DIR"
-          rm -rf feeds/base
-          ./scripts/feeds update -a
-          ./scripts/feeds install -a
 
       - name: Build timesync packages
         run: |
@@ -241,9 +272,9 @@ jobs:
           name: timesync-ipks
           path: ipks-timesync/*.ipk
 
-  # ── 3. mrhaav: atc-fib-fm350_gl + luci-proto-atc ────────────────────────────
+  # ── 4. mrhaav: atc-fib-fm350_gl + luci-proto-atc ────────────────────────────
   build-mrhaav:
-    needs: check-and-build
+    needs: [check-and-build, prepare-sdk]
     if: needs.check-and-build.outputs.build_needed == 'true'
     runs-on: ubuntu-latest
     steps:
@@ -271,14 +302,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: immortalwrt-sdk-*
-          key: sdk-bcm2711-24.10.6-v3
-
-      - name: Download & extract SDK (24.10.6)
-        if: steps.cache-sdk.outputs.cache-hit != 'true'
-        run: |
-          SDK_URL="${{ env.SDK_URL }}"
-          wget -q "$SDK_URL"
-          tar --zstd -xf "${{ env.SDK_TAR }}"
+          key: sdk-bcm2711-24.10.6-prepared-v1
 
       # Build a proper feed directory (one sub-dir per package) then src-link it.
       - name: Create proper feed directory structure
@@ -292,13 +316,9 @@ jobs:
         run: |
           SDK_DIR=$(ls -d immortalwrt-sdk-* | head -1)
           cd "$SDK_DIR"
-          rm -rf feeds/base
-          rm -f feeds.conf feeds.conf.default
-          printf '%s\n' "src-link mrhaavfeed ${{ github.workspace }}/mrhaavfeed"               >> feeds.conf.default
-          printf '%s\n' "src-git  luci     https://github.com/immortalwrt/luci.git;openwrt-24.10"     >> feeds.conf.default
-          printf '%s\n' "src-git  packages https://github.com/immortalwrt/packages.git;openwrt-24.10" >> feeds.conf.default
-          ./scripts/feeds update -a
-          ./scripts/feeds install -a
+          echo "src-link mrhaavfeed ${{ github.workspace }}/mrhaavfeed" >> feeds.conf.default
+          ./scripts/feeds update mrhaavfeed
+          ./scripts/feeds install -a -p mrhaavfeed
 
       - name: Build mrhaav packages
         run: |
@@ -330,7 +350,7 @@ jobs:
 
   # ── 4. Argon theme + config ──────────────────────────────────────────────────
   build-argon:
-    needs: check-and-build
+    needs: [check-and-build, prepare-sdk]
     if: needs.check-and-build.outputs.build_needed == 'true'
     runs-on: ubuntu-latest
     steps:
@@ -357,32 +377,12 @@ jobs:
             libncurses-dev libssl-dev python3-dev python3-setuptools \
             rsync unzip zlib1g-dev file wget zstd
 
-      # Isolate Argon's cache key to prevent parallel workspace pollution
       - name: Restore SDK cache
         id: cache-sdk
         uses: actions/cache@v4
         with:
           path: immortalwrt-sdk-*
-          key: sdk-bcm2711-24.10.6-argon
-
-      - name: Download & extract SDK (24.10.6)
-        if: steps.cache-sdk.outputs.cache-hit != 'true'
-        run: |
-          SDK_URL="${{ env.SDK_URL }}"
-          wget -q "$SDK_URL"
-          tar --zstd -xf "${{ env.SDK_TAR }}"
-
-      # Copy core development headers from host to the SDK target staging include area to prevent wget-ssl compile errors
-      - name: Populate SDK staging headers from host
-        run: |
-          SDK_DIR=$(ls -d immortalwrt-sdk-* | head -1)
-          cd "$SDK_DIR"
-          STAGING_USR_INCLUDE=$(find staging_dir/ -type d -path "staging_dir/target-*/usr/include" | head -1)
-          if [ -n "$STAGING_USR_INCLUDE" ]; then
-            echo "Populating headers into $STAGING_USR_INCLUDE"
-            sudo apt-get update && sudo apt-get install -y libssl-dev
-            cp -r /usr/include/openssl "$STAGING_USR_INCLUDE/" || true
-          fi
+          key: sdk-bcm2711-24.10.6-prepared-v1
 
       - name: Create proper feed directory structure
         run: |
@@ -395,15 +395,9 @@ jobs:
         run: |
           SDK_DIR=$(ls -d immortalwrt-sdk-* | head -1)
           cd "$SDK_DIR"
-          rm -rf feeds/base
-          rm -f feeds.conf feeds.conf.default
-          printf '%s\n' "src-link argonfeed ${{ github.workspace }}/argonfeed"                       >> feeds.conf.default
-          printf '%s\n' "src-git  luci     https://github.com/immortalwrt/luci.git;openwrt-24.10"    >> feeds.conf.default
-          printf '%s\n' "src-git  packages https://github.com/immortalwrt/packages.git;openwrt-24.10" >> feeds.conf.default
-          ./scripts/feeds update -a
-          # WORKAROUND: remove conflicting package that causes circular deps
-          rm -rf feeds/luci/applications/luci-app-diskman
-          ./scripts/feeds install -a
+          echo "src-link argonfeed ${{ github.workspace }}/argonfeed" >> feeds.conf.default
+          ./scripts/feeds update argonfeed
+          ./scripts/feeds install -a -p argonfeed
 
       - name: Build packages
         run: |
