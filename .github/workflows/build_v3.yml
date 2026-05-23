@@ -1,0 +1,461 @@
+name: V3 combined for mvebu Linksys WRT32X ImmortalWrt 24.10.4 (mvebu/cortexa9)
+
+on:
+  workflow_dispatch:
+    inputs:
+      force_rebuild:
+        description: 'Force rebuild even if upstream SHA has not changed'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+
+env:
+  SDK_NAME: immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64
+  SDK_TAR:  immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64.tar.zst
+  SDK_URL:  https://downloads.immortalwrt.org/releases/24.10.4/targets/mvebu/cortexa9/immortalwrt-sdk-24.10.4-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64.tar.zst
+  ARCH:     arm_cortex-a9_vfpv3-d16
+
+# ─────────────────────────────────────────────────────────────────────────────
+jobs:
+
+  # ── 0. Gate: only build when QModem has new commits (or force_rebuild=true) ─
+  check-and-build:
+    runs-on: ubuntu-latest
+    outputs:
+      build_needed: ${{ steps.check.outputs.build_needed }}
+      upstream_sha: ${{ steps.check.outputs.upstream_sha }}
+    steps:
+      # Restore BEFORE the step that reads .last_built_sha
+      - name: Restore last built SHA cache
+        uses: actions/cache@v4
+        with:
+          path: .last_built_sha
+          key: qmodem-last-built-sha-24.10.4-${{ github.run_id }}
+          restore-keys: |
+            qmodem-last-built-sha-24.10.4-
+
+      - name: Check latest upstream commit
+        id: check
+        run: |
+          UPSTREAM_REPO="FUjr/QModem"
+          API_URL="https://api.github.com/repos/$UPSTREAM_REPO/commits/main"
+          LATEST_SHA=$(curl -s "$API_URL" | jq -r '.sha')
+          LAST_BUILT_SHA=$(cat .last_built_sha 2>/dev/null || echo "")
+          FORCE="${{ github.event.inputs.force_rebuild }}"
+
+          echo "Latest upstream SHA : $LATEST_SHA"
+          echo "Last built SHA      : $LAST_BUILT_SHA"
+          echo "Force rebuild       : $FORCE"
+
+          if [ "$LATEST_SHA" != "$LAST_BUILT_SHA" ]; then
+            echo "New commits detected — build triggered."
+            echo "build_needed=true"        >> "$GITHUB_OUTPUT"
+            echo "upstream_sha=$LATEST_SHA" >> "$GITHUB_OUTPUT"
+            echo "$LATEST_SHA" > .last_built_sha
+          elif [ "$FORCE" = "true" ]; then
+            echo "No new commits, but force_rebuild=true — build triggered anyway."
+            echo "build_needed=true"        >> "$GITHUB_OUTPUT"
+            echo "upstream_sha=$LATEST_SHA" >> "$GITHUB_OUTPUT"
+            echo "$LATEST_SHA" > .last_built_sha
+          else
+            echo "No new commits and force_rebuild=false — skipping build."
+            echo "build_needed=false"       >> "$GITHUB_OUTPUT"
+            echo "upstream_sha=$LATEST_SHA" >> "$GITHUB_OUTPUT"
+          fi
+
+  # ── 1. Sequential SDK Preparation Stage ─────────────────────────────────────
+  prepare-sdk:
+    needs: check-and-build
+    if: needs.check-and-build.outputs.build_needed == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Prepare build environment
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential clang flex bison g++ gawk \
+            gcc-multilib g++-multilib gettext git \
+            libncurses-dev libssl-dev python3-dev python3-setuptools \
+            rsync unzip zlib1g-dev file wget zstd
+
+      - name: Restore SDK cache
+        id: cache-sdk
+        uses: actions/cache@v4
+        with:
+          path: immortalwrt-sdk-*
+          key: sdk-mvebu-24.10.4-prepared-v1
+
+      - name: Download & extract SDK (24.10.4)
+        if: steps.cache-sdk.outputs.cache-hit != 'true'
+        run: |
+          SDK_URL="${{ env.SDK_URL }}"
+          wget -q "$SDK_URL"
+          tar --zstd -xf "${{ env.SDK_TAR }}"
+
+      # Populate headers from host to target staging to bypass dependency compile crashes (lua.h and des.h)
+      - name: Populate SDK staging headers from host
+        if: steps.cache-sdk.outputs.cache-hit != 'true'
+        run: |
+          SDK_DIR=$(ls -d immortalwrt-sdk-* | head -1)
+          cd "$SDK_DIR"
+          STAGING_USR_INCLUDE=$(find staging_dir/ -type d -path "staging_dir/target-*/usr/include" | head -1)
+          if [ -n "$STAGING_USR_INCLUDE" ]; then
+            echo "Populating headers into $STAGING_USR_INCLUDE"
+            sudo apt-get update && sudo apt-get install -y liblua5.1-0-dev libssl-dev
+            cp -r /usr/include/lua5.1/* "$STAGING_USR_INCLUDE/" || true
+            cp -r /usr/include/openssl "$STAGING_USR_INCLUDE/" || true
+          fi
+
+      - name: Set up base feeds
+        if: steps.cache-sdk.outputs.cache-hit != 'true'
+        run: |
+          SDK_DIR=$(ls -d immortalwrt-sdk-* | head -1)
+          cd "$SDK_DIR"
+          ./scripts/feeds update -a
+          # WORKAROUND: remove conflicting package that causes circular deps
+          rm -rf feeds/luci/applications/luci-app-diskman
+          ./scripts/feeds install -a
+
+  # ── 2. QModem: kmod vendor IPKs + all userspace packages ────────────────────
+  build-qmodem:
+    needs: [check-and-build, prepare-sdk]
+    if: needs.check-and-build.outputs.build_needed == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout QModem source
+        uses: actions/checkout@v4
+        with:
+          repository: FUjr/QModem
+          path: qmodem-source
+          ref: main
+
+      - name: Prepare build environment
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential clang flex bison g++ gawk \
+            gcc-multilib g++-multilib gettext git \
+            libncurses-dev libssl-dev python3-dev python3-setuptools \
+            rsync unzip zlib1g-dev file wget zstd
+
+      - name: Restore SDK cache
+        id: cache-sdk
+        uses: actions/cache@v4
+        with:
+          path: immortalwrt-sdk-*
+          key: sdk-mvebu-24.10.4-prepared-v1
+
+      - name: Set up feeds (QModem + essential ImmortalWrt feeds)
+        run: |
+          SDK_DIR=$(ls -d immortalwrt-sdk-* | head -1)
+          cd "$SDK_DIR"
+          # Only append custom feed to pre-shipped feeds.conf.default to keep base feed dependencies intact
+          echo "src-link qmodem ${{ github.workspace }}/qmodem-source" >> feeds.conf.default
+          ./scripts/feeds update qmodem
+          # WORKAROUND: remove conflicting package that causes circular deps
+          rm -rf feeds/luci/applications/luci-app-diskman
+          ./scripts/feeds install -a -p qmodem
+
+      - name: Configure and build QModem packages
+        run: |
+          SDK_DIR=$(ls -d immortalwrt-sdk-* | head -1)
+          cd "$SDK_DIR"
+          echo "CONFIG_PACKAGE_luci-app-qmodem-next=m" >> .config
+          echo "CONFIG_PACKAGE_luci-app-qmodem-monitor=m" >> .config
+          echo "CONFIG_PACKAGE_quectel_CM_5G_M=m" >> .config
+          echo "# CONFIG_PACKAGE_quectel-CM-5G is not set" >> .config
+          echo "# CONFIG_PACKAGE_quectel-cm is not set" >> .config
+          echo "CONFIG_PACKAGE_kmod-qmi-wwan-q=m" >> .config
+          echo "CONFIG_PACKAGE_kmod-qmi-wwan-f=m" >> .config
+          echo "CONFIG_PACKAGE_kmod-qmi-wwan-s=m" >> .config
+          echo "CONFIG_PACKAGE_luci-app-qmodem_INCLUDE_vendor-qmi-wwan=y" >> .config
+          echo "# CONFIG_PACKAGE_luci-app-qmodem_INCLUDE_generic-qmi-wwan is not set" >> .config
+          echo "# CONFIG_PACKAGE_quectel_MHI is not set" >> .config
+          echo "# CONFIG_PACKAGE_fibocom_MHI is not set" >> .config
+          echo "# CONFIG_PACKAGE_simcom_MHI is not set" >> .config
+          make defconfig
+          make package/luci-app-qmodem-next/compile V=s
+          make package/luci-app-qmodem-monitor/compile V=s
+
+      - name: Collect QModem + dependency IPKs
+        run: |
+          mkdir -p ipks-qmodem
+          SDK_DIR=$(ls -d immortalwrt-sdk-* | head -1)
+          ARCH="${{ env.ARCH }}"
+          
+          # Copy userspace packages from feed directory
+          cp "$SDK_DIR/bin/packages/$ARCH/qmodem/"*.ipk ipks-qmodem/ 2>/dev/null || true
+          
+          # Recursively find any driver kmod packages and copy them
+          find "$SDK_DIR/bin" -name "kmod-qmi*.ipk" -exec cp {} ipks-qmodem/ \; 2>/dev/null || true
+          find "$SDK_DIR/bin" -name "kmod-pcie*.ipk" -exec cp {} ipks-qmodem/ \; 2>/dev/null || true
+          
+          # Copy dependencies as defined in reference actions
+          for pkg in curl terminfo bc coreutils coreutils-stat usbutils; do
+            cp "$SDK_DIR/bin/packages/$ARCH/packages/${pkg}_"*.ipk ipks-qmodem/ 2>/dev/null || \
+            cp "$SDK_DIR/bin/packages/$ARCH/base/${pkg}_"*.ipk ipks-qmodem/ 2>/dev/null || \
+            echo "Note: $pkg not found"
+          done
+          
+          ls -lh ipks-qmodem/
+          [ "$(ls ipks-qmodem/*.ipk 2>/dev/null | wc -l)" -gt 0 ] || \
+            { echo "FATAL: zero IPKs collected — aborting"; exit 1; }
+
+      - name: Upload QModem IPKs
+        uses: actions/upload-artifact@v4
+        with:
+          name: qmodem-ipks
+          path: ipks-qmodem/*.ipk
+
+  # ── 2. quectel-timesync ──────────────────────────────────────────────────────
+  build-timesync:
+    needs: [check-and-build, prepare-sdk]
+    if: needs.check-and-build.outputs.build_needed == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout quectel-timesync
+        uses: actions/checkout@v4
+        with:
+          repository: sevvian/quectel-timesync
+          path: quectel-source
+          ref: master
+
+      - name: Prepare build environment
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential flex bison g++ gawk \
+            gcc-multilib g++-multilib gettext git \
+            libncurses-dev libssl-dev python3-dev python3-setuptools \
+            rsync unzip zlib1g-dev file wget zstd
+
+      - name: Restore SDK cache
+        id: cache-sdk
+        uses: actions/cache@v4
+        with:
+          path: immortalwrt-sdk-*
+          key: sdk-mvebu-24.10.4-prepared-v1
+
+      # Copy packages directly into SDK package/ tree (no custom feed needed).
+      - name: Copy packages into SDK and set up feeds
+        run: |
+          SDK_DIR=$(ls -d immortalwrt-sdk-* | head -1)
+          cp -r quectel-source/openwrt/quectel-timesync "$SDK_DIR/package/quectel-timesync"
+          cp -r quectel-source/luci-app-quectel-timesync "$SDK_DIR/package/luci-app-quectel-timesync"
+          cd "$SDK_DIR"
+          rm -rf feeds/base
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      - name: Build timesync packages
+        run: |
+          SDK_DIR=$(ls -d immortalwrt-sdk-* | head -1)
+          cd "$SDK_DIR"
+          echo 'CONFIG_PACKAGE_quectel-timesync=m'          >> .config
+          echo 'CONFIG_PACKAGE_luci-app-quectel-timesync=m' >> .config
+          make defconfig
+          make package/quectel-timesync/compile V=s
+          make package/luci-app-quectel-timesync/compile V=s
+
+      - name: Collect timesync IPKs
+        run: |
+          mkdir -p ipks-timesync
+          SDK_DIR=$(ls -d immortalwrt-sdk-* | head -1)
+          ARCH="${{ env.ARCH }}"
+          find "$SDK_DIR/bin" -name "quectel-timesync_*.ipk" -exec cp {} ipks-timesync/ \; 2>/dev/null || true
+          find "$SDK_DIR/bin" -name "luci-app-quectel-timesync_*.ipk" -exec cp {} ipks-timesync/ \; 2>/dev/null || true
+          echo "=== Collected timesync IPKs ==="
+          ls -lh ipks-timesync/
+          [ "$(ls ipks-timesync/*.ipk 2>/dev/null | wc -l)" -gt 0 ] || \
+            { echo "FATAL: zero timesync IPKs collected"; exit 1; }
+
+      - name: Upload timesync IPKs
+        uses: actions/upload-artifact@v4
+        with:
+          name: timesync-ipks
+          path: ipks-timesync/*.ipk
+
+  # ── 3. mrhaav: atc-fib-fm350_gl + luci-proto-atc ────────────────────────────
+  build-mrhaav:
+    needs: [check-and-build, prepare-sdk]
+    if: needs.check-and-build.outputs.build_needed == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout mrhaav packages
+        uses: actions/checkout@v4
+        with:
+          repository: mrhaav/openwrt-packages
+          path: mrhaav-source
+          ref: main
+          sparse-checkout: |
+            atc-fib-fm350_gl
+            luci/protocols/luci-proto-atc
+
+      - name: Prepare build environment
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential clang flex bison g++ gawk \
+            gcc-multilib g++-multilib gettext git \
+            libncurses-dev libssl-dev python3-dev python3-setuptools \
+            rsync unzip zlib1g-dev file wget zstd
+
+      - name: Restore SDK cache
+        id: cache-sdk
+        uses: actions/cache@v4
+        with:
+          path: immortalwrt-sdk-*
+          key: sdk-mvebu-24.10.4-prepared-v1
+
+      # Build a proper feed directory (one sub-dir per package) then src-link it.
+      - name: Create proper feed directory structure
+        run: |
+          mkdir -p mrhaavfeed/atc-fib-fm350_gl
+          mkdir -p mrhaavfeed/luci-proto-atc
+          cp -r mrhaav-source/atc-fib-fm350_gl/*              mrhaavfeed/atc-fib-fm350_gl/
+          cp -r mrhaav-source/luci/protocols/luci-proto-atc/* mrhaavfeed/luci-proto-atc/
+
+      - name: Set up feeds (mrhaav feed + essential ImmortalWrt)
+        run: |
+          SDK_DIR=$(ls -d immortalwrt-sdk-* | head -1)
+          cd "$SDK_DIR"
+          rm -rf feeds/base
+          rm -f feeds.conf feeds.conf.default
+          printf '%s\n' "src-link mrhaavfeed ${{ github.workspace }}/mrhaavfeed"               >> feeds.conf.default
+          printf '%s\n' "src-git  luci     https://github.com/immortalwrt/luci.git;openwrt-24.10"     >> feeds.conf.default
+          printf '%s\n' "src-git  packages https://github.com/immortalwrt/packages.git;openwrt-24.10" >> feeds.conf.default
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      - name: Build mrhaav packages
+        run: |
+          SDK_DIR=$(ls -d immortalwrt-sdk-* | head -1)
+          cd "$SDK_DIR"
+          echo 'CONFIG_PACKAGE_atc-fib-fm350_gl=m' >> .config
+          echo 'CONFIG_PACKAGE_luci-proto-atc=m'   >> .config
+          make defconfig
+          make package/feeds/mrhaavfeed/atc-fib-fm350_gl/compile V=s
+          make package/feeds/mrhaavfeed/luci-proto-atc/compile V=s
+
+      - name: Collect mrhaav IPKs
+        run: |
+          mkdir -p ipks-mrhaav
+          SDK_DIR=$(ls -d immortalwrt-sdk-* | head -1)
+          ARCH="${{ env.ARCH }}"
+          cp "$SDK_DIR/bin/packages/$ARCH/mrhaavfeed/"*.ipk ipks-mrhaav/ 2>/dev/null || true
+          find "$SDK_DIR/bin" -name "atc-fib-fm350_gl_*.ipk" -o -name "luci-proto-atc_*.ipk" | xargs -I{} cp {} ipks-mrhaav/ 2>/dev/null || true
+          echo "=== Collected mrhaav IPKs ==="
+          ls -lh ipks-mrhaav/
+          [ "$(ls ipks-mrhaav/*.ipk 2>/dev/null | wc -l)" -gt 0 ] || \
+            { echo "FATAL: zero mrhaav IPKs collected"; exit 1; }
+
+      - name: Upload mrhaav IPKs
+        uses: actions/upload-artifact@v4
+        with:
+          name: mrhaav-ipks
+          path: ipks-mrhaav/*.ipk
+
+  # ── 4. Argon theme + config ──────────────────────────────────────────────────
+  build-argon:
+    needs: [check-and-build, prepare-sdk]
+    if: needs.check-and-build.outputs.build_needed == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout luci-theme-argon
+        uses: actions/checkout@v4
+        with:
+          repository: jerrykuku/luci-theme-argon
+          path: argon-theme-source
+          ref: master
+
+      - name: Checkout luci-app-argon-config
+        uses: actions/checkout@v4
+        with:
+          repository: jerrykuku/luci-app-argon-config
+          path: argon-config-source
+          ref: master
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential clang flex bison g++ gawk \
+            gcc-multilib g++-multilib gettext git \
+            libncurses-dev libssl-dev python3-dev python3-setuptools \
+            rsync unzip zlib1g-dev file wget zstd
+
+      - name: Restore SDK cache
+        id: cache-sdk
+        uses: actions/cache@v4
+        with:
+          path: immortalwrt-sdk-*
+          key: sdk-mvebu-24.10.4-prepared-v1
+
+      # Copy packages directly into SDK package/ directory matching local package standards (no custom feed needed)
+      - name: Copy packages into SDK
+        run: |
+          SDK_DIR=$(ls -d immortalwrt-sdk-* | head -1)
+          cp -r argon-theme-source "$SDK_DIR/package/luci-theme-argon"
+          cp -r argon-config-source "$SDK_DIR/package/luci-app-argon-config"
+
+      # Standard build targets for direct local packages (no feeds update/install required)
+      - name: Build packages
+        run: |
+          SDK_DIR=$(ls -d immortalwrt-sdk-* | head -1)
+          cd "$SDK_DIR"
+          echo "CONFIG_PACKAGE_luci-theme-argon=m" >> .config
+          echo "CONFIG_PACKAGE_luci-app-argon-config=m" >> .config
+          make defconfig
+          make package/luci-theme-argon/compile V=s
+          make package/luci-app-argon-config/compile V=s
+
+      - name: Collect Argon IPKs
+        run: |
+          mkdir -p ipks-argon
+          SDK_DIR=$(ls -d immortalwrt-sdk-* | head -1)
+          ARCH="${{ env.ARCH }}"
+          cp "$SDK_DIR/bin/packages/$ARCH/base/"luci-theme-argon_*.ipk ipks-argon/ 2>/dev/null || true
+          cp "$SDK_DIR/bin/packages/$ARCH/base/"luci-app-argon-config_*.ipk ipks-argon/ 2>/dev/null || true
+          find "$SDK_DIR/bin" -name "luci-theme-argon_*.ipk" -o -name "luci-app-argon-config_*.ipk" | xargs -I{} cp {} ipks-argon/ 2>/dev/null || true
+          
+          echo "=== Collected Argon IPKs ==="
+          ls -lh ipks-argon/
+          [ "$(ls ipks-argon/*.ipk 2>/dev/null | wc -l)" -gt 0 ] || \
+            { echo "FATAL: zero Argon IPKs collected"; exit 1; }
+
+      - name: Upload Argon IPKs
+        uses: actions/upload-artifact@v4
+        with:
+          name: argon-ipks
+          path: ipks-argon/*.ipk
+
+  # ── 5. Release: merge all artifact buckets into one GitHub release ───────────
+  release:
+    needs: [check-and-build, build-qmodem, build-timesync, build-mrhaav, build-argon]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all IPK artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: all-ipks
+
+      - name: Flatten into single release directory
+        run: |
+          mkdir -p release-ipks
+          find all-ipks -name "*.ipk" -exec cp {} release-ipks/ \;
+          echo "=== IPKs being published ==="
+          ls -lh release-ipks/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release-ipks/*
+          tag_name: qmodem-extras-24.10.4-${{ needs.check-and-build.outputs.upstream_sha || github.run_number }}
+          name: "QModem + Extras for ImmortalWrt 24.10.4 (mvebu/cortexa9) – ${{ needs.check-and-build.outputs.upstream_sha || github.run_number }}"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
