@@ -395,18 +395,13 @@ jobs:
           key: sdk-bcm2711-24.10.6-prepared-v1
 
       # Copy packages directly into SDK package/ directory matching local package standards (no custom feed needed)
-      - name: Copy packages into SDK and set up feeds
+      - name: Copy packages into SDK
         run: |
           SDK_DIR=$(ls -d immortalwrt-sdk-* | head -1)
           cp -r argon-theme-source "$SDK_DIR/package/luci-theme-argon"
           cp -r argon-config-source "$SDK_DIR/package/luci-app-argon-config"
-          cd "$SDK_DIR"
-          ./scripts/feeds update -a
-          # WORKAROUND: remove conflicting package that causes circular deps
-          rm -rf feeds/luci/applications/luci-app-diskman
-          ./scripts/feeds install -a
 
-      # Standard build targets for direct packages
+      # Standard build targets for direct local packages (no feeds update/install required)
       - name: Build packages
         run: |
           SDK_DIR=$(ls -d immortalwrt-sdk-* | head -1)
