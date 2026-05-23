@@ -357,12 +357,13 @@ jobs:
             libncurses-dev libssl-dev python3-dev python3-setuptools \
             rsync unzip zlib1g-dev file wget zstd
 
+      # Isolate Argon's cache key to prevent parallel workspace pollution
       - name: Restore SDK cache
         id: cache-sdk
         uses: actions/cache@v4
         with:
           path: immortalwrt-sdk-*
-          key: sdk-bcm2711-24.10.6-v3
+          key: sdk-bcm2711-24.10.6-argon
 
       - name: Download & extract SDK (24.10.6)
         if: steps.cache-sdk.outputs.cache-hit != 'true'
@@ -370,6 +371,18 @@ jobs:
           SDK_URL="${{ env.SDK_URL }}"
           wget -q "$SDK_URL"
           tar --zstd -xf "${{ env.SDK_TAR }}"
+
+      # Copy core development headers from host to the SDK target staging include area to prevent wget-ssl compile errors
+      - name: Populate SDK staging headers from host
+        run: |
+          SDK_DIR=$(ls -d immortalwrt-sdk-* | head -1)
+          cd "$SDK_DIR"
+          STAGING_USR_INCLUDE=$(find staging_dir/ -type d -path "staging_dir/target-*/usr/include" | head -1)
+          if [ -n "$STAGING_USR_INCLUDE" ]; then
+            echo "Populating headers into $STAGING_USR_INCLUDE"
+            sudo apt-get update && sudo apt-get install -y libssl-dev
+            cp -r /usr/include/openssl "$STAGING_USR_INCLUDE/" || true
+          fi
 
       - name: Create proper feed directory structure
         run: |
