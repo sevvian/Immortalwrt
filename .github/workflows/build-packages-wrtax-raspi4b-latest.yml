@@ -1,4 +1,4 @@
-name: Build QModem + extras for ImmortalWrt 24.10.6 (Raspberry Pi 4B) STABLE
+name: OBSOLETE  Build QModem + extras for ImmortalWrt 24.10.6 (Raspberry Pi 4B) 
 
 on:
   workflow_dispatch:
