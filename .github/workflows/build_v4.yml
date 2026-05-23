@@ -1,4 +1,4 @@
-name: FINAL V4 combined for raspi4B ImmortalWrt 24.10.6 (bcm2711/aarch64)
+name: FINAL Essential packages - combined for raspi4B ImmortalWrt 24.10.6 (bcm2711/aarch64)
 
 on:
   workflow_dispatch:
